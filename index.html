@@ -218,6 +218,22 @@ body{font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text);display
   border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:9px}
 .pile-pip.filled{background:var(--gold);color:#000;border-color:var(--gold2);font-weight:800}
 
+/* Won cards history section */
+.won-section{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px}
+.won-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+.won-title{font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.1em;font-weight:700}
+.won-toggle{font-size:12px;color:var(--text2)}
+.won-body{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+.won-hand{background:var(--bg3);border-radius:8px;padding:8px}
+.won-hand-label{font-size:10px;color:var(--text2);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.won-player-row{display:flex;align-items:flex-start;gap:8px;margin-bottom:5px}
+.won-player-name{font-size:10px;font-weight:700;color:var(--text2);width:52px;flex-shrink:0;padding-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.won-player-pieces{display:flex;flex-wrap:wrap;gap:4px;flex:1}
+.mini-reveal{width:32px;height:32px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:8px;font-weight:800;border:1.5px solid;flex-shrink:0}
+.mini-reveal.red{background:var(--red);border-color:var(--red2);color:#fff}
+.mini-reveal.blk{background:#252535;border-color:#5a5a7e;color:#ccc}
+.mini-reveal.hidden-piece{background:var(--bg3);border-color:var(--border);color:var(--text2);font-size:10px}
+
 /* lo overlay */
 .lo-info{background:rgba(231,76,60,.1);border:1px solid var(--red2);border-radius:10px;
   padding:10px;font-size:13px;color:var(--red2);margin-top:6px}
@@ -713,6 +729,7 @@ function initGameState(){
     bidDone:[],    // slots that have bid
     revealOrder:[], // slots to reveal in seq-reveal
     revealDone:[], // slots that have revealed in seq-reveal
+    wonCards:{0:[],1:[],2:[],3:[]}, // accumulated cards won this round per slot
   };
   // find who has ตี่แดง
   // (after dealing)
@@ -735,6 +752,7 @@ function dealHands(){
   G_full.loChecked=[];
   G_full.plays={};
   G_full.phase='check-lo';
+  G_full.wonCards={0:[],1:[],2:[],3:[]};
 }
 
 function hostHandleLo(slot){
@@ -885,6 +903,15 @@ function hostResolveHand(){
   let pilesGained=Math.floor(totalPieces/4);
   G_full.players[winner.slot].piles+=pilesGained;
 
+  // Record all played pieces into winner's wonCards history
+  if(!G_full.wonCards) G_full.wonCards={0:[],1:[],2:[],3:[]};
+  let handRecord={handNum:G_full.handsDone+1,callType:G_full.callType,plays:{}};
+  Object.entries(G_full.plays).forEach(([slot,play])=>{
+    if(play&&play.pieces) handRecord.plays[slot]={pieces:play.pieces,revealed:play.revealed};
+  });
+  if(!G_full.wonCards[winner.slot]) G_full.wonCards[winner.slot]=[];
+  G_full.wonCards[winner.slot].push(handRecord);
+
   let remaining=G_full.hands[0].length+G_full.hands[1].length+G_full.hands[2].length+G_full.hands[3].length;
   broadcastState();
 
@@ -996,6 +1023,119 @@ function hostRevealChoice(doReveal){
 }
 
 
+
+// ══════════════════════════════════════════════════════════════
+// WON CARDS HISTORY
+// ══════════════════════════════════════════════════════════════
+let wonCardsOpen=true; // expanded by default
+
+function renderWonCards(body){
+  if(!G||!G.wonCards) return;
+  // Check if any player has won anything
+  let hasAny=Object.values(G.wonCards).some(arr=>arr&&arr.length>0);
+
+  let sec=el('div','won-section');
+
+  // Header (clickable to toggle)
+  let hdr=el('div','won-header');
+  hdr.onclick=()=>{wonCardsOpen=!wonCardsOpen;renderGame();};
+
+  let title=el('div','won-title');
+  title.textContent='🃏 ไพ่ที่แต่ละคนได้ (รอบนี้)';
+  let tog=el('div','won-toggle');
+  tog.textContent=wonCardsOpen?'▲ ย่อ':'▼ ขยาย';
+  hdr.appendChild(title);hdr.appendChild(tog);
+  sec.appendChild(hdr);
+
+  if(!wonCardsOpen){body.appendChild(sec);return;}
+
+  let wonBody=el('div','won-body');
+
+  if(!hasAny){
+    let empty=el('div');
+    empty.style.cssText='font-size:12px;color:var(--text2);text-align:center;padding:8px';
+    empty.textContent='ยังไม่มีใครชนะมือเลย';
+    wonBody.appendChild(empty);
+  } else {
+    // Show per-player sections
+    G.players.forEach((p,slot)=>{
+      let playerHands=G.wonCards[slot]||[];
+      let playerDiv=el('div');
+      playerDiv.style.cssText='background:var(--bg3);border-radius:10px;padding:8px;border:1px solid var(--border)';
+
+      // Player name header
+      let pHdr=el('div');
+      pHdr.style.cssText='display:flex;align-items:center;gap:7px;margin-bottom:8px';
+      let dotColors=['var(--gold)','var(--red2)','var(--green2)','var(--accent2)'];
+      let dot=el('div');
+      dot.style.cssText=`width:8px;height:8px;border-radius:50%;background:${dotColors[slot]};flex-shrink:0`;
+      pHdr.appendChild(dot);
+      let pName=el('div');
+      pName.style.cssText='font-size:12px;font-weight:700;color:var(--text);flex:1';
+      pName.textContent=p.name+(slot===mySlot?' ★':'');
+      pHdr.appendChild(pName);
+      // Pile count badge
+      let piles=el('div');
+      piles.style.cssText='font-size:11px;font-weight:700;color:var(--gold2);background:rgba(212,160,23,.12);padding:2px 8px;border-radius:6px';
+      let totalPieces=playerHands.reduce((sum,h)=>sum+Object.values(h.plays).reduce((s2,pl)=>s2+(pl.pieces?pl.pieces.length:0),0),0);
+      piles.textContent=Math.floor(totalPieces/4)+' กอง';
+      pHdr.appendChild(piles);
+      playerDiv.appendChild(pHdr);
+
+      if(playerHands.length===0){
+        let none=el('div');
+        none.style.cssText='font-size:11px;color:var(--text2);padding:4px 0';
+        none.textContent='ยังไม่ได้กองเลย';
+        playerDiv.appendChild(none);
+      } else {
+        // Each hand won
+        playerHands.forEach(hand=>{
+          let handDiv=el('div');
+          handDiv.style.cssText='margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.05)';
+
+          let handLbl=el('div','won-hand-label');
+          handLbl.textContent='มือที่ '+hand.handNum+' — '+CNAMES[hand.callType];
+          handDiv.appendChild(handLbl);
+
+          // Show all 4 players' cards in this hand
+          G.players.forEach((pp,pslot)=>{
+            let playInHand=hand.plays&&hand.plays[pslot];
+            if(!playInHand||!playInHand.pieces||playInHand.pieces.length===0) return;
+
+            let pRow=el('div','won-player-row');
+            let pLabel=el('div','won-player-name');
+            pLabel.textContent=pp.name;
+            // mark winner of this hand
+            if(pslot===slot&&playerHands.indexOf(hand)>=0){
+              pLabel.style.color='var(--gold2)';
+            }
+            pRow.appendChild(pLabel);
+
+            let pPieces=el('div','won-player-pieces');
+            playInHand.pieces.forEach(pc=>{
+              let m=el('div');
+              if(!playInHand.revealed){
+                m.className='mini-reveal hidden-piece';
+                m.textContent='?';
+              } else {
+                m.className='mini-reveal '+pc.color;
+                m.innerHTML='<span>'+SHORT[pc.rank]+'</span><span style="font-size:6px;opacity:.8">'+(pc.color==='red'?'🔴':'⚫')+'</span>';
+              }
+              pPieces.appendChild(m);
+            });
+            pRow.appendChild(pPieces);
+            handDiv.appendChild(pRow);
+          });
+          playerDiv.appendChild(handDiv);
+        });
+      }
+      wonBody.appendChild(playerDiv);
+    });
+  }
+
+  sec.appendChild(wonBody);
+  body.appendChild(sec);
+}
 
 // ══════════════════════════════════════════════════════════════
 // RANK SYSTEM
@@ -1241,6 +1381,9 @@ function renderGame(){
     });
     body.appendChild(ow);
   }
+
+  // Won cards history
+  renderWonCards(body);
 
   // Action bar
   renderActionBar(abar,myHasSubmitted);
