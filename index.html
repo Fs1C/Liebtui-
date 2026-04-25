@@ -741,14 +741,8 @@ function dealHands(){
   deck=[...deck.slice(cut),...deck.slice(0,cut)];
   G_full.hands={};
   for(let i=0;i<4;i++) G_full.hands[i]=deck.slice(i*8,(i+1)*8);
-
-  // Find ตี่แดง holder
-  let starter=0;
-  for(let i=0;i<4;i++){
-    if(G_full.hands[i].some(p=>p.rank==='ตี่'&&p.color==='red')){starter=i;break;}
-  }
-  G_full.leadSlot=starter;
-  G_full.currentChecking=0; // start lo check from slot 0
+  // leadSlot is managed externally (rotation), not by ตี่แดง
+  G_full.currentChecking=0;
   G_full.loChecked=[];
   G_full.plays={};
   G_full.phase='check-lo';
@@ -951,14 +945,14 @@ function hostEndRound(){
         raw=-(Math.abs(piles-bid)); // missed: negative difference
       }
     }
-    let final=raw*G_full.multiplier;
+    let final=raw; // no multiplier
     G_full.players[i].score+=final;
     return{slot:i,name:p.name,piles,bid,hitBid,raw,final,totalScore:G_full.players[i].score};
   });
   G_full.roundResults=results;
   G_full.phase='end-round';
   G_full.round++;
-  G_full.multiplier=1;
+  // multiplier removed
 
   let winner=results.reduce((a,b)=>b.piles>a.piles?b:a);
   saveRank(winner.name,1,winner.final);
@@ -977,8 +971,11 @@ function hostEndRound(){
     broadcastState();
     setTimeout(()=>{
       if(!G_full||G_full.phase!=='end-round') return;
+      let nextLead2=((G_full.leadSlot+1)%4);
       G_full.players.forEach(p=>p.piles=0);
+      G_full.wonCards={0:[],1:[],2:[],3:[]};
       dealHands();
+      G_full.leadSlot=nextLead2;
       callTypeChosen=null;
       sendDeal();
     },5000);
@@ -987,7 +984,9 @@ function hostEndRound(){
 
 function hostNewGame(){
   if(!isHost)return;
+  let nextLead=G_full?((G_full.leadSlot+1)%4):0; // rotate +1 each new game
   initGameState();
+  G_full.leadSlot=nextLead;
   dealHands();
   sendDeal();
 }
@@ -1245,7 +1244,7 @@ function renderGame(){
   }
   else if(G.phase==='reveal') phTxt='🏆 '+(G.winnerSlot!==undefined?G.players[G.winnerSlot].name+' ชนะมือนี้!':'');
   else if(G.phase==='end-round') phTxt='🏁 จบรอบ! กำลังเริ่มใหม่...';
-  ph.innerHTML=`<div class="phase-txt">${phTxt}</div>${G.multiplier>1?`<div class="mult-tag">×${G.multiplier}</div>`:''}`;
+  ph.innerHTML=`<div class="phase-txt">${phTxt}</div>`;
   body.appendChild(ph);
 
   // Center table (plays) — show during waiting-play, seq-reveal, reveal
