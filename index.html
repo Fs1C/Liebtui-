@@ -416,9 +416,9 @@ function doEnterLobby(){
         let slot=getNextSlot();
         if(slot===-1){conn.send({type:'full'});conn.close();return;}
         conns[slot]=conn;
-        G_lobby.players[slot]={name:'...',connected:true,slot};
-        conn.send({type:'welcome',slot,players:G_lobby.players});
-        broadcastLobby();updateLobbyUI();
+        // Don't assign name yet — wait for 'join' message with real name
+        G_lobby.players[slot]={name:'กำลังโหลด...',connected:true,slot};
+        conn.send({type:'assign-slot',slot}); // tell guest their slot number
         conn.on('data',d=>handleHostReceive(slot,d));
         conn.on('close',()=>handlePeerClose(slot));
       });
@@ -433,8 +433,7 @@ function doEnterLobby(){
     peer.on('open',()=>{
       hostConn=peer.connect(FIXED_HOST_ID,{reliable:true});
       hostConn.on('open',()=>{
-        hostConn.send({type:'join',name:myName});
-        toast('✅ เชื่อมต่อแล้ว!');
+        toast('✅ เชื่อมต่อแล้ว! รอข้อมูล...');
       });
       hostConn.on('data',d=>handleGuestReceive(d));
       hostConn.on('close',()=>{toast('⚠ หลุดการเชื่อมต่อ');showScreen('s-home');});
@@ -459,15 +458,14 @@ function handleHostReceive(slot,d){
     broadcastLobby();
     updateLobbyUI();
   }
+  else if(d.type==='ack-lo'){
+    hostAckLoCheck(slot);
+  }
   else if(d.type==='lo-request'){
     hostHandleLo(slot);
   }
   else if(d.type==='play-submit'){
     hostHandlePlay(slot,d.pieceIds,d.revealed,d.callType);
-  }
-
-  else if(d.type==='next-round'){
-    // guest acknowledged, host controls timing
   }
 }
 
@@ -476,12 +474,17 @@ function handleHostReceive(slot,d){
 // ══════════════════════════════════════════════════════════════
 function handleGuestReceive(d){
   if(d.type==='full'){toast('❌ ห้องเต็มแล้ว');showScreen('s-home');return;}
-  if(d.type==='welcome'){
+  if(d.type==='assign-slot'){
+    // Host gave us a slot number — now send our name
     mySlot=d.slot;
-    G_lobby.players=d.players;
+    hostConn.send({type:'join',name:myName});
     document.getElementById('lob-role').textContent='ผู้เล่น '+(mySlot+1)+' · '+myName;
     document.getElementById('target-card').style.display='none';
     document.getElementById('start-btn').style.display='none';
+  }
+  if(d.type==='welcome'){
+    // Host confirmed with full player list
+    G_lobby.players=d.players;
     updateLobbyUI();
   }
   if(d.type==='lobby-update'){
@@ -523,7 +526,7 @@ function broadcastLobby(){
 }
 
 function broadcastState(extraHandSlot=-1,extraHand=null){
-  // Send public state to all, and private hand to specific slot
+  updateHandCounts();
   let pub=publicState();
   Object.entries(conns).forEach(([slot,c])=>{
     if(c&&c.open){
@@ -553,7 +556,10 @@ function sendDeal(){
 }
 
 function publicState(){
-  // State without private hands - sanitize plays to hide unrevealed pieces
+  if(!G_full) return {};
+  // Ensure loChecked is always serialized as array
+  if(!Array.isArray(G_full.loChecked)) G_full.loChecked=[];
+  G_full.loCheckedCount=G_full.loChecked.length;
   let s=JSON.parse(JSON.stringify(G_full));
   delete s.hands;
   delete s.deck;
@@ -734,17 +740,17 @@ function hostHandleLo(slot){
 }
 
 function hostAckLoCheck(slot){
-  if(!G_full.loChecked)G_full.loChecked=[];
+  if(!Array.isArray(G_full.loChecked)) G_full.loChecked=[];
   if(!G_full.loChecked.includes(slot)) G_full.loChecked.push(slot);
   G_full.loCheckedCount=G_full.loChecked.length;
   if(G_full.loChecked.length>=4){
     G_full.phase='call';
     G_full.plays={};
+    G_full.loChecked=[];
+    G_full.loCheckedCount=0;
     callTypeChosen=null;
-    broadcastState();
-  } else {
-    broadcastState();
   }
+  broadcastState();
 }
 
 // When guest/host submits play
@@ -1204,18 +1210,20 @@ function doLo(){
 
 function doAckLo(){
   if(isHost){
+    // Host: update G_full directly (broadcastState will update G)
     hostAckLoCheck(0);
+    // hostAckLoCheck already calls broadcastState which calls renderGame
   } else {
+    // Guest: send to host AND update local G for instant feedback
     hostConn.send({type:'ack-lo'});
+    if(G){
+      if(!Array.isArray(G.loChecked)) G.loChecked=[];
+      if(!G.loChecked.includes(mySlot)) G.loChecked.push(mySlot);
+      G.loCheckedCount=(G.loCheckedCount||0)+1;
+    }
+    toast('✅ ยืนยันแล้ว รอผู้เล่นอื่น...');
+    renderGame();
   }
-  // Mark self as acked locally for immediate feedback
-  if(G){
-    if(!G.loChecked)G.loChecked=[];
-    if(!G.loChecked.includes(mySlot))G.loChecked.push(mySlot);
-    G.loCheckedCount=(G.loCheckedCount||0)+1;
-  }
-  toast('✅ ยืนยันแล้ว รอผู้เล่นอื่น...');
-  renderGame();
 }
 
 function doSubmitPlay(ct,revealed){
@@ -1240,31 +1248,10 @@ function doSubmitPlay(ct,revealed){
 
 
 
-// ══════════════════════════════════════════════════════════════
-// HOST: handle guest ack-lo
-// ══════════════════════════════════════════════════════════════
-function handleHostReceiveExtra(slot,d){
-  if(d.type==='ack-lo') hostAckLoCheck(slot);
-}
-
-// Patch handleHostReceive
-const _origHR=handleHostReceive;
-function handleHostReceive(slot,d){
-  if(d.type==='ack-lo'){hostAckLoCheck(slot);return;}
-  _origHR(slot,d);
-}
-
 function updateHandCounts(){
   if(!G_full)return;
   G_full.handCounts={};
   for(let i=0;i<4;i++) G_full.handCounts[i]=G_full.hands[i]?G_full.hands[i].length:0;
-}
-
-// Override broadcastState to include hand counts
-const _origBS=broadcastState;
-function broadcastState(extra=-1,extraH=null){
-  if(G_full) updateHandCounts();
-  _origBS(extra,extraH);
 }
 
 // ══════════════════════════════════════════════════════════════
