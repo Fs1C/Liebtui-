@@ -847,16 +847,20 @@ function hostHandlePlay(slot,pieceIds,callType){
 }
 
 function hostStartSeqReveal(){
-  // Build reveal order: lead first, then clockwise
+  // เลี๊ยบ (1 ตัว) = เปิดทุกคนทันที ไม่มีเลือก
+  if(G_full.callType==='lieb'){
+    Object.values(G_full.plays).forEach(p=>{if(p) p.revealed=true;});
+    hostResolveHand();
+    return;
+  }
+  // อื่นๆ = เปิดทีละคน lead บังคับเปิดก่อน
   G_full.revealOrder=[];
   G_full.revealDone=[];
   for(let i=0;i<4;i++) G_full.revealOrder.push((G_full.leadSlot+i)%4);
   G_full.phase='seq-reveal';
-  G_full.currentRevealer=G_full.revealOrder[0]; // leader always goes first
-  // Leader's card is FORCED reveal
+  G_full.currentRevealer=G_full.revealOrder[0];
   G_full.plays[G_full.leadSlot].revealed=true;
   G_full.revealDone.push(G_full.leadSlot);
-  // Next revealer is slot after leader
   if(G_full.revealOrder.length>1){
     G_full.currentRevealer=G_full.revealOrder[1];
   }
