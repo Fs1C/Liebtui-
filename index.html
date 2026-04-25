@@ -461,11 +461,17 @@ function handleHostReceive(slot,d){
   else if(d.type==='ack-lo'){
     hostAckLoCheck(slot);
   }
+  else if(d.type==='bid-submit'){
+    hostReceiveBid(slot,d.bid);
+  }
   else if(d.type==='lo-request'){
     hostHandleLo(slot);
   }
   else if(d.type==='play-submit'){
-    hostHandlePlay(slot,d.pieceIds,d.revealed,d.callType);
+    hostHandlePlay(slot,d.pieceIds,d.callType);
+  }
+  else if(d.type==='reveal-choice'){
+    hostReceiveReveal(slot,d.doReveal);
   }
 }
 
@@ -692,16 +698,21 @@ function initGameState(){
   G_full={
     players:G_lobby.players.map((p,i)=>({name:p.name,score:0,piles:0,slot:i})),
     round:1,target:G_lobby.target,multiplier:1,
-    phase:'check-lo', // check-lo | waiting-lo | call | waiting-play | reveal | end-round | game-over
+    phase:'check-lo', // check-lo | bid | call | waiting-play | seq-reveal | reveal | end-round | game-over
     callType:null,callSize:0,
     leadSlot:0,currentChecking:0,
     plays:{}, // slot->{ pieces, revealed, submitted }
     hands:{},
-    loChecked:[], // slots that have confirmed no-lo or lo
-    loSlot:-1, // who called lo (-1 = nobody)
+    loChecked:[],
+    loSlot:-1,
     handsDone:0,
     totalHandPieces:0,
     roundResults:null,
+    bids:{},       // slot -> bid number (0-8)
+    bidOrder:[],   // order of bidding slots
+    bidDone:[],    // slots that have bid
+    revealOrder:[], // slots to reveal in seq-reveal
+    revealDone:[], // slots that have revealed in seq-reveal
   };
   // find who has ตี่แดง
   // (after dealing)
@@ -744,40 +755,109 @@ function hostAckLoCheck(slot){
   if(!G_full.loChecked.includes(slot)) G_full.loChecked.push(slot);
   G_full.loCheckedCount=G_full.loChecked.length;
   if(G_full.loChecked.length>=4){
-    G_full.phase='call';
-    G_full.plays={};
     G_full.loChecked=[];
     G_full.loCheckedCount=0;
     callTypeChosen=null;
+    hostStartBidPhase();
+  } else {
+    broadcastState();
+  }
+}
+
+function hostStartBidPhase(){
+  // Build bidding order starting from leadSlot clockwise
+  G_full.bids={};
+  G_full.bidDone=[];
+  G_full.bidOrder=[];
+  for(let i=0;i<4;i++) G_full.bidOrder.push((G_full.leadSlot+i)%4);
+  G_full.phase='bid';
+  G_full.currentBidder=G_full.bidOrder[0];
+  broadcastState();
+}
+
+function hostReceiveBid(slot,bid){
+  // Validate it's this player's turn to bid
+  if(slot!==G_full.currentBidder) return;
+  if(G_full.bidDone.includes(slot)) return;
+  // Validate bid range
+  if(bid<0||bid>8) return;
+  // Last bidder constraint: sum != 8
+  let isLast=G_full.bidDone.length===3;
+  if(isLast){
+    let sumSoFar=Object.values(G_full.bids).reduce((a,b)=>a+b,0);
+    if(sumSoFar+bid===8) return; // invalid
+  }
+  G_full.bids[slot]=bid;
+  G_full.bidDone.push(slot);
+  if(G_full.bidDone.length===4){
+    // All bid done — move to call phase
+    G_full.phase='call';
+    G_full.plays={};
+    callTypeChosen=null;
+  } else {
+    let nextIdx=G_full.bidOrder.indexOf(slot)+1;
+    G_full.currentBidder=G_full.bidOrder[nextIdx];
   }
   broadcastState();
 }
 
-// When guest/host submits play
-function hostHandlePlay(slot,pieceIds,revealed,callType){
+// When guest/host submits play (all hidden initially)
+function hostHandlePlay(slot,pieceIds,callType){
   let hand=G_full.hands[slot];
   let pieces=hand.filter(p=>pieceIds.includes(p.id));
 
-  // Validate
   if(slot===G_full.leadSlot&&G_full.phase==='call'){
-    // Leader sets the call type and plays their pieces
     if(!isValid(pieces,callType))return;
     G_full.callType=callType;
     G_full.callSize=CSIZES[callType];
     G_full.phase='waiting-play';
     G_full.plays={};
   } else if(G_full.phase==='waiting-play'&&pieces.length!==G_full.callSize){
-    return; // wrong count
+    return;
   }
-  // Record play
-  G_full.plays[slot]={pieces,revealed,submitted:true};
-  // Remove from hand
+  // All plays stored hidden initially
+  G_full.plays[slot]={pieces,revealed:false,submitted:true};
   G_full.hands[slot]=hand.filter(p=>!pieceIds.includes(p.id));
 
-  // Check if all submitted
   let submitted=Object.keys(G_full.plays).length;
-  if(submitted===4) hostResolveHand();
-  else broadcastState();
+  if(submitted===4){
+    // All submitted — start sequential reveal from leader
+    hostStartSeqReveal();
+  } else {
+    broadcastState();
+  }
+}
+
+function hostStartSeqReveal(){
+  // Build reveal order: lead first, then clockwise
+  G_full.revealOrder=[];
+  G_full.revealDone=[];
+  for(let i=0;i<4;i++) G_full.revealOrder.push((G_full.leadSlot+i)%4);
+  G_full.phase='seq-reveal';
+  G_full.currentRevealer=G_full.revealOrder[0]; // leader always goes first
+  // Leader's card is FORCED reveal
+  G_full.plays[G_full.leadSlot].revealed=true;
+  G_full.revealDone.push(G_full.leadSlot);
+  // Next revealer is slot after leader
+  if(G_full.revealOrder.length>1){
+    G_full.currentRevealer=G_full.revealOrder[1];
+  }
+  broadcastState();
+}
+
+function hostReceiveReveal(slot,doReveal){
+  if(slot!==G_full.currentRevealer) return;
+  if(G_full.revealDone.includes(slot)) return;
+  if(G_full.plays[slot]) G_full.plays[slot].revealed=doReveal;
+  G_full.revealDone.push(slot);
+  let nextIdx=G_full.revealOrder.indexOf(slot)+1;
+  if(nextIdx<G_full.revealOrder.length){
+    G_full.currentRevealer=G_full.revealOrder[nextIdx];
+    broadcastState();
+  } else {
+    // All revealed — resolve
+    hostResolveHand();
+  }
 }
 
 
@@ -800,55 +880,79 @@ function hostResolveHand(){
   G_full.phase='reveal';
   G_full.winnerSlot=winner.slot;
 
-  // Count piles gained
   let totalPieces=0;
-  for(let p of Object.values(G_full.plays)) if(p&&!p.passed) totalPieces+=p.pieces.length;
+  for(let p of Object.values(G_full.plays)) if(p) totalPieces+=p.pieces.length;
   let pilesGained=Math.floor(totalPieces/4);
   G_full.players[winner.slot].piles+=pilesGained;
 
-  // Check if hands empty
   let remaining=G_full.hands[0].length+G_full.hands[1].length+G_full.hands[2].length+G_full.hands[3].length;
+  broadcastState();
 
-  if(remaining===0){
-    // End of round - calculate scores
-    hostEndRound();
-  } else {
-    G_full.leadSlot=winner.slot;
-    G_full.handsDone++;
-    broadcastState();
-  }
+  // Auto advance after 2.5 seconds
+  setTimeout(()=>{
+    if(!G_full||G_full.phase!=='reveal') return;
+    if(remaining===0){
+      hostEndRound();
+    } else {
+      G_full.leadSlot=winner.slot;
+      G_full.handsDone++;
+      G_full.phase='call';
+      G_full.plays={};
+      G_full.callType=null;
+      callTypeChosen=null;
+      updateHandCounts();
+      broadcastState();
+    }
+  },2500);
 }
 
 function hostEndRound(){
   let results=G_full.players.map((p,i)=>{
     let piles=p.piles;
-    let raw=piles>=8?16:(PILE_SCORES[piles]||(-2));
+    let bid=G_full.bids&&G_full.bids[i]!==undefined?G_full.bids[i]:null;
+    let raw,hitBid=false;
+    if(bid===null){
+      // fallback to old scoring if no bid
+      raw=piles>=8?16:(PILE_SCORES[piles]||(-2));
+    } else {
+      if(piles===bid){
+        hitBid=true;
+        raw=bid+3; // exact match: bid+3 for all bids
+      } else {
+        raw=-(Math.abs(piles-bid)); // missed: negative difference
+      }
+    }
     let final=raw*G_full.multiplier;
     G_full.players[i].score+=final;
-    return{slot:i,name:p.name,piles,raw,final,totalScore:G_full.players[i].score};
+    return{slot:i,name:p.name,piles,bid,hitBid,raw,final,totalScore:G_full.players[i].score};
   });
   G_full.roundResults=results;
   G_full.phase='end-round';
   G_full.round++;
   G_full.multiplier=1;
 
-  // Save to local rank
   let winner=results.reduce((a,b)=>b.piles>a.piles?b:a);
   saveRank(winner.name,1,winner.final);
 
-  // Check game over
   let topScore=Math.max(...G_full.players.map(p=>p.score));
   if(topScore>=G_full.target){
     G_full.phase='game-over';
     let finalScores=G_full.players.map(p=>({name:p.name,score:p.score,slot:p.slot}));
     finalScores.sort((a,b)=>b.score-a.score);
     let pub=publicState();
-    // Send game-over
     Object.values(conns).forEach(c=>{if(c&&c.open)c.send({type:'game-over',state:pub,finalScores})});
     G=pub;
     showResults(finalScores);
   } else {
+    // Auto start new round after 5s
     broadcastState();
+    setTimeout(()=>{
+      if(!G_full||G_full.phase!=='end-round') return;
+      G_full.players.forEach(p=>p.piles=0);
+      dealHands();
+      callTypeChosen=null;
+      sendDeal();
+    },5000);
   }
 }
 
@@ -864,8 +968,8 @@ function hostSelfCheckLo(){
   hostAckLoCheck(0);
 }
 
-// Host submits own play
-function hostSubmitPlay(pieceIds,revealed,callType){
+// Host submits own play (all hidden)
+function hostSubmitPlay(pieceIds,callType){
   let hand=G_full.hands[0];
   let pieces=hand.filter(p=>pieceIds.includes(p.id));
 
@@ -878,12 +982,17 @@ function hostSubmitPlay(pieceIds,revealed,callType){
   } else if(G_full.phase==='waiting-play'&&pieces.length!==G_full.callSize){
     return;
   }
-  G_full.plays[0]={pieces,revealed,submitted:true};
+  G_full.plays[0]={pieces,revealed:false,submitted:true};
   G_full.hands[0]=hand.filter(p=>!pieceIds.includes(p.id));
   myHand=G_full.hands[0];
 
-  if(Object.keys(G_full.plays).length===4) hostResolveHand();
+  if(Object.keys(G_full.plays).length===4) hostStartSeqReveal();
   else broadcastState();
+}
+
+// Host makes reveal choice
+function hostRevealChoice(doReveal){
+  hostReceiveReveal(0,doReveal);
 }
 
 
@@ -971,9 +1080,10 @@ function renderGame(){
   let sg=el('div','score-grid');
   G.players.forEach((p,i)=>{
     let t=el('div','score-tile'+(i===mySlot?' me':'')+(i===G.leadSlot?' active':''));
+    let bidInfo=G.bids&&G.bids[i]!==undefined?'เดา '+G.bids[i]:'?';
     t.innerHTML=`<div class="st-name">${p.name}${i===mySlot?' ★':''}</div>
       <div class="st-pts">${p.score>0?'+':''}${p.score}</div>
-      <div class="st-piles">🀄 ${p.piles} กอง</div>`;
+      <div class="st-piles">🀄 ${p.piles} | 🎯 ${bidInfo}</div>`;
     sg.appendChild(t);
   });
   body.appendChild(sg);
@@ -981,50 +1091,110 @@ function renderGame(){
   // Phase info
   let ph=el('div','phase-box');
   let phTxt='';
-  if(G.phase==='check-lo') phTxt='ตรวจสอบมือ — กดโละถ้ามีสิทธิ์ (ยืนยันแล้ว '+(G.loCheckedCount||0)+'/4)';
-  else if(G.phase==='call') phTxt=G.players[G.leadSlot].name+(mySlot===G.leadSlot?' (คุณ)':'')+' กำลังเรียก';
-  else if(G.phase==='waiting-play') phTxt='ทุกคนออกตัว — เรียก: '+CNAMES[G.callType];
-  else if(G.phase==='reveal') phTxt='เปิดไพ่! '+(G.winnerSlot!==undefined?G.players[G.winnerSlot].name+' ชนะ':'');
-  else if(G.phase==='end-round') phTxt='จบรอบ!';
+  if(G.phase==='check-lo') phTxt='ตรวจสอบมือ ('+(G.loCheckedCount||0)+'/4 ยืนยัน)';
+  else if(G.phase==='bid'){
+    let bidSum=G.bids?Object.values(G.bids).reduce((a,b)=>a+b,0):0;
+    phTxt='เดากอง — '+(G.players[G.currentBidder]?G.players[G.currentBidder].name:'')+' กำลังเดา | รวม '+bidSum;
+  }
+  else if(G.phase==='call') phTxt=G.players[G.leadSlot].name+(mySlot===G.leadSlot?' (คุณ)':'')+' เรียก — วางคว่ำทุกใบ';
+  else if(G.phase==='waiting-play') phTxt='วางคว่ำ — '+CNAMES[G.callType]+' ('+(Object.keys(G.plays||{}).length)+'/4)';
+  else if(G.phase==='seq-reveal'){
+    phTxt='เปิดไพ่ทีละคน — '+(G.currentRevealer!==undefined?G.players[G.currentRevealer].name:'')+' กำลังเลือก ('+(G.revealDone?G.revealDone.length:0)+'/4)';
+  }
+  else if(G.phase==='reveal') phTxt='🏆 '+(G.winnerSlot!==undefined?G.players[G.winnerSlot].name+' ชนะมือนี้!':'');
+  else if(G.phase==='end-round') phTxt='🏁 จบรอบ! กำลังเริ่มใหม่...';
   ph.innerHTML=`<div class="phase-txt">${phTxt}</div>${G.multiplier>1?`<div class="mult-tag">×${G.multiplier}</div>`:''}`;
   body.appendChild(ph);
 
-  // Center table (plays)
-  if(G.phase==='waiting-play'||G.phase==='reveal'){
+  // Center table (plays) — show during waiting-play, seq-reveal, reveal
+  if(G.phase==='waiting-play'||G.phase==='seq-reveal'||G.phase==='reveal'){
     let ta=el('div','table-area');
-    let tl=el('div','table-label');tl.textContent='โต๊ะกลาง — '+CNAMES[G.callType];
+    let tl=el('div','table-label');
+    tl.textContent='โต๊ะกลาง — '+CNAMES[G.callType];
     ta.appendChild(tl);
-    let pg=el('div','plays-grid');
+
+    // Grid: 2 columns, each cell = one player's play
+    let pg=el('div');
+    pg.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:8px';
+
     G.players.forEach((p,i)=>{
       let play=G.plays&&G.plays[i];
-      let row=el('div','play-row'+(G.phase==='reveal'&&G.winnerSlot===i?' winner-row':''));
-      let pn=el('div','play-pname');pn.textContent=p.name+(i===mySlot?' ★':'');
-      row.appendChild(pn);
-      let pp=el('div','play-pieces');
+      let isWinner=G.phase==='reveal'&&G.winnerSlot===i;
+      let isCurrentRevealer=G.phase==='seq-reveal'&&G.currentRevealer===i;
+      let notYetChosen=G.phase==='seq-reveal'&&G.revealDone&&!G.revealDone.includes(i);
+
+      // Card container per player
+      let cell=el('div');
+      let borderColor=isWinner?'var(--gold2)':isCurrentRevealer?'var(--accent2)':'var(--border)';
+      let bgColor=isWinner?'rgba(212,160,23,.1)':isCurrentRevealer?'rgba(108,92,231,.1)':'var(--bg3)';
+      cell.style.cssText=`border-radius:10px;border:1.5px solid ${borderColor};background:${bgColor};padding:8px;`;
+
+      // Player name row
+      let nameRow=el('div');
+      nameRow.style.cssText='display:flex;align-items:center;gap:6px;margin-bottom:6px';
+
+      // Colored dot for player
+      let dot=el('div');
+      let dotColors=['var(--gold)','var(--red2)','var(--green2)','var(--accent2)'];
+      dot.style.cssText=`width:8px;height:8px;border-radius:50%;background:${dotColors[i]};flex-shrink:0`;
+      nameRow.appendChild(dot);
+
+      let nameEl=el('div');
+      nameEl.style.cssText='font-size:11px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1';
+      nameEl.textContent=p.name+(i===mySlot?' ★':'');
+      nameRow.appendChild(nameEl);
+
+      // Status badge
+      let badge=el('div');
+      badge.style.cssText='font-size:10px;font-weight:700;flex-shrink:0';
+      if(isWinner) badge.textContent='👑';
+      else if(isCurrentRevealer) badge.textContent='👁?';
+      else if(notYetChosen) badge.textContent='⏳';
+      nameRow.appendChild(badge);
+      cell.appendChild(nameRow);
+
+      // Pieces row
+      let piecesRow=el('div');
+      piecesRow.style.cssText='display:flex;flex-wrap:wrap;gap:5px;min-height:44px;align-items:center;justify-content:center';
+
       if(!play||!play.submitted){
-        let w=el('div','play-status waiting-s');w.textContent='⏳';row.appendChild(w);
-      } else if(play.passed){
-        let w=el('div','play-status hidden-s');w.textContent='(ไม่ออก)';row.appendChild(w);
-      } else if(!play.revealed&&G.phase!=='reveal'){
-        // hidden - show face-down
-        for(let x=0;x<(play.pieces.length||G.callSize);x++) pp.appendChild(makeFd());
-        let w=el('div','play-status hidden-s');w.textContent='🙈';row.appendChild(w);
+        // Not placed yet
+        let w=el('div');
+        w.style.cssText='font-size:11px;color:var(--text2);width:100%;text-align:center';
+        w.textContent='⏳ รอวาง...';
+        piecesRow.appendChild(w);
+      } else if(!play.revealed){
+        // Hidden — show face-down cards
+        let count=play.pieces?play.pieces.length:(G.callSize||1);
+        for(let x=0;x<count;x++) piecesRow.appendChild(makeFd());
+        // Label below
+        let hideLbl=el('div');
+        hideLbl.style.cssText='font-size:10px;color:var(--text2);width:100%;text-align:center;margin-top:2px';
+        hideLbl.textContent=notYetChosen?'ยังไม่เลือก':'🙈 ซ่อน';
+        piecesRow.appendChild(hideLbl);
       } else {
-        // revealed or reveal phase
-        (play.pieces||[]).forEach(pc=>pp.appendChild(makePieceDiv(pc)));
-        if(G.phase==='reveal'&&G.winnerSlot===i){
-          let w=el('div','play-status revealed');w.textContent='👑 ชนะ';row.appendChild(w);
-        }
+        // Revealed — show actual pieces face-up
+        (play.pieces||[]).forEach(pc=>{
+          let pd=makePieceDiv(pc,false,false);
+          pd.style.width='40px';pd.style.height='40px';pd.style.fontSize='9px';
+          piecesRow.appendChild(pd);
+        });
+        // Label below
+        let showLbl=el('div');
+        showLbl.style.cssText='font-size:10px;color:var(--green2);width:100%;text-align:center;margin-top:2px;font-weight:700';
+        showLbl.textContent=isWinner?'👑 ชนะ!':'👁 เปิด';
+        piecesRow.appendChild(showLbl);
       }
-      row.appendChild(pp);
-      pg.appendChild(row);
+      cell.appendChild(piecesRow);
+      pg.appendChild(cell);
     });
+
     ta.appendChild(pg);
     body.appendChild(ta);
   }
 
   // My hand
-  let myHasSubmitted=G.plays&&G.plays[mySlot]&&G.plays[mySlot].submitted;
+  let myHasSubmitted=(G.plays&&G.plays[mySlot]&&G.plays[mySlot].submitted)||(G.phase==='seq-reveal'&&G.revealDone&&G.revealDone.includes(mySlot));
   let hw=el('div','hand-wrap');
   let hh=el('div','hand-header');
   let hl=el('div','hand-label');
@@ -1040,7 +1210,7 @@ function renderGame(){
       hp.appendChild(d);
     });
   } else {
-    let canSelect=G.phase==='call'&&mySlot===G.leadSlot||G.phase==='waiting-play'&&mySlot!==G.leadSlot||G.phase==='waiting-play'&&mySlot===G.leadSlot;
+    let canSelect=(G.phase==='call'&&mySlot===G.leadSlot)||G.phase==='waiting-play';
     myHand.forEach(pc=>{
       let d=makePieceDiv(pc,true,selectedIds.has(pc.id));
       if(canSelect||G.phase==='call') d.onclick=()=>{
@@ -1080,10 +1250,10 @@ function renderActionBar(abar,submitted){
   if(!G)return;
   let row=el('div','abar-row');
 
+  // ── CHECK-LO PHASE ──
   if(G.phase==='check-lo'){
-    // Lo button if eligible
     let myCanLo=canLo(myHand);
-    let alreadyAcked=G.loChecked&&G.loChecked.includes(mySlot);
+    let alreadyAcked=Array.isArray(G.loChecked)&&G.loChecked.includes(mySlot);
     if(myCanLo&&!alreadyAcked){
       let lb=abtn('🔄 โละ! (แจกใหม่ ×2)','lo',()=>doLo());
       row.appendChild(lb);
@@ -1092,8 +1262,46 @@ function renderActionBar(abar,submitted){
     if(alreadyAcked) okb.disabled=true;
     row.appendChild(okb);
 
+  // ── BID PHASE ──
+  } else if(G.phase==='bid'){
+    let myBidDone=G.bidDone&&G.bidDone.includes(mySlot);
+    let isMyTurn=G.currentBidder===mySlot;
+    let sumSoFar=G.bids?Object.values(G.bids).reduce((a,b)=>a+b,0):0;
+    let isLast=G.bidDone&&G.bidDone.length===3;
+
+    if(myBidDone){
+      let info=el('div');
+      info.style.cssText='font-size:13px;color:var(--text2);text-align:center;padding:10px';
+      info.innerHTML='✅ เดาไว้แล้ว <b style="color:var(--gold2)">'+(G.bids&&G.bids[mySlot]!==undefined?G.bids[mySlot]:'-')+' กอง</b> — รอคนอื่น...';
+      abar.appendChild(info);
+    } else if(!isMyTurn){
+      let info=el('div');
+      info.style.cssText='font-size:13px;color:var(--text2);text-align:center;padding:10px';
+      info.textContent='⏳ รอ '+G.players[G.currentBidder].name+' เดา...';
+      abar.appendChild(info);
+    } else {
+      // My turn to bid
+      let bidWrap=el('div');bidWrap.style.cssText='width:100%';
+      let bidLabel=el('div');
+      bidLabel.style.cssText='font-size:12px;color:var(--text2);text-align:center;margin-bottom:8px';
+      bidLabel.textContent='เดาจำนวนกองที่จะได้ (รวมตอนนี้: '+sumSoFar+(isLast?' — ห้ามเดา '+(8-sumSoFar):'')+')'
+      bidWrap.appendChild(bidLabel);
+      let bidRow=el('div','abar-row');bidRow.style.flexWrap='wrap';bidRow.style.gap='5px';
+      for(let n=0;n<=8;n++){
+        // Last bidder: disable number that makes sum==8
+        let forbidden=isLast&&(sumSoFar+n===8);
+        let bb=el('button','abar-btn '+(forbidden?'hide':'call'));
+        bb.textContent=n;bb.style.cssText='flex:0;min-width:36px;padding:10px 6px;font-size:15px;font-weight:800';
+        bb.disabled=forbidden;
+        bb.onclick=()=>doSubmitBid(n);
+        bidRow.appendChild(bb);
+      }
+      bidWrap.appendChild(bidRow);
+      abar.appendChild(bidWrap);
+    }
+
+  // ── CALL PHASE (leader picks type + places cards hidden) ──
   } else if(G.phase==='call'&&mySlot===G.leadSlot&&!submitted){
-    // Call selector + play button
     let cs=el('div','call-scroll');
     let cr=el('div','call-row');
     Object.entries(CNAMES).forEach(([k,v])=>{
@@ -1106,81 +1314,75 @@ function renderActionBar(abar,submitted){
 
     let selPieces=myHand.filter(p=>selectedIds.has(p.id));
     let valid=callTypeChosen&&isValid(selPieces,callTypeChosen);
-
-    let pb=abtn('📣 เรียก+เปิด '+(callTypeChosen?CNAMES[callTypeChosen]:'...'),'call',()=>{
+    let pb=abtn('🙈 วางคว่ำ '+(callTypeChosen?CNAMES[callTypeChosen]:'...'),'call',()=>{
       if(!valid)return;
-      doSubmitPlay(callTypeChosen,true); // leader always reveals their call
+      doSubmitPlay(callTypeChosen); // all hidden
     });
     pb.disabled=!valid;
     row.appendChild(pb);
 
-  } else if(G.phase==='waiting-play'&&!submitted&&mySlot!==G.leadSlot){
-    // Non-leader plays: choose pieces + show (reveal) or hide
+  // ── WAITING-PLAY PHASE (everyone places hidden) ──
+  } else if(G.phase==='waiting-play'&&!submitted){
     let selPieces=myHand.filter(p=>selectedIds.has(p.id));
     let correctCount=selPieces.length===G.callSize;
-
     let needCount=G.callSize||1;
     let selInfo=selPieces.length+'/'+needCount+' ตัว';
-    let showBtn=abtn('👁 เปิด ('+selInfo+')','show',()=>{
+    let pb=abtn('🙈 วางคว่ำ ('+selInfo+')','call',()=>{
       if(!correctCount){toast('⚠ ต้องเลือก '+needCount+' ตัว');return;}
-      doSubmitPlay(G.callType,true);
+      doSubmitPlay(G.callType);
     });
-    showBtn.disabled=!correctCount;
-    row.appendChild(showBtn);
+    pb.disabled=!correctCount;
+    row.appendChild(pb);
 
-    let hideBtn=abtn('🙈 ซ่อน ('+selInfo+')','hide',()=>{
-      if(!correctCount){toast('⚠ ต้องเลือก '+needCount+' ตัว');return;}
-      doSubmitPlay(G.callType,false);
-    });
-    hideBtn.disabled=!correctCount;
-    row.appendChild(hideBtn);
+  // ── SEQ-REVEAL PHASE (leader revealed, others choose) ──
+  } else if(G.phase==='seq-reveal'){
+    let isMyRevealTurn=G.currentRevealer===mySlot;
+    let alreadyRevealed=G.revealDone&&G.revealDone.includes(mySlot);
+    let isLeader=mySlot===G.leadSlot;
 
-
-
-  } else if(G.phase==='reveal'){
-    // Waiting for next hand or host advances
-    let info=el('div','abar-row');
-    info.style.cssText='font-size:12px;color:var(--text2);text-align:center;padding:8px';
-    info.textContent=isHost?'':'รอ host ดำเนินการต่อ...';
-    abar.appendChild(info);
-    if(isHost){
-      let nb=abtn('➡ มือถัดไป','nxt',()=>{
-        G_full.phase='call';
-        G_full.plays={};
-        G_full.callType=null;
-        callTypeChosen=null;
-        selectedIds.clear();
-        // Update hand counts
-        updateHandCounts();
-        broadcastState();
-      });
-      row.appendChild(nb);
-    }
-
-  } else if(G.phase==='end-round'){
-    if(isHost){
-      let nb=abtn('🔄 รอบใหม่','nxt',()=>{
-        G_full.players.forEach(p=>p.piles=0);
-        dealHands();
-        callTypeChosen=null;
-        sendDeal();
-      });
-      row.appendChild(nb);
-    } else {
+    if(alreadyRevealed||isLeader&&G.revealDone&&G.revealDone.includes(mySlot)){
       let info=el('div');
-      info.style.cssText='font-size:12px;color:var(--text2);text-align:center;padding:8px';
-      info.textContent='รอ host เริ่มรอบใหม่...';
+      info.style.cssText='font-size:13px;color:var(--text2);text-align:center;padding:10px';
+      let myRevealed=G.plays&&G.plays[mySlot]&&G.plays[mySlot].revealed;
+      info.innerHTML=(myRevealed?'👁 เปิดแล้ว':'🙈 ซ่อนแล้ว')+' — รอคนอื่น...';
       abar.appendChild(info);
+    } else if(!isMyRevealTurn){
+      let info=el('div');
+      info.style.cssText='font-size:13px;color:var(--text2);text-align:center;padding:10px';
+      info.textContent='⏳ รอ '+G.players[G.currentRevealer].name+' เลือก...';
+      abar.appendChild(info);
+    } else {
+      // My turn to reveal
+      let showBtn=abtn('👁 เปิด (ชนะได้)','show',()=>doRevealChoice(true));
+      row.appendChild(showBtn);
+      let hideBtn=abtn('🙈 ซ่อนต่อ','hide',()=>doRevealChoice(false));
+      row.appendChild(hideBtn);
     }
+
+  // ── REVEAL PHASE (auto-advancing) ──
+  } else if(G.phase==='reveal'){
+    let info=el('div');
+    info.style.cssText='font-size:13px;color:var(--gold);text-align:center;padding:10px;font-weight:700';
+    info.textContent='⏳ กำลังไปมือถัดไป...';
+    abar.appendChild(info);
+
+  // ── END-ROUND PHASE (auto-advancing) ──
+  } else if(G.phase==='end-round'){
+    let info=el('div');
+    info.style.cssText='font-size:12px;color:var(--text2);text-align:center;padding:8px';
+    info.textContent='⏳ จะเริ่มรอบใหม่อัตโนมัติ...';
+    abar.appendChild(info);
     // Show round results
     let rc=el('div','card');rc.style.marginBottom='8px';
     if(G.roundResults){
-      rc.innerHTML='<div class="card-title">ผลรอบนี้</div>'+
+      let bidSum=G.roundResults.reduce((a,r)=>a+(r.bid||0),0);
+      let gameType=bidSum>8?'เกมแย่ง 🔥':bidSum<8?'เกมยัด 🛡':'';
+      rc.innerHTML='<div class="card-title">ผลรอบนี้ '+gameType+'</div>'+
         G.roundResults.map(r=>`
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)">
-            <span style="font-weight:600">${r.name}</span>
-            <span style="color:var(--text2)">${r.piles} กอง</span>
-            <span style="color:${r.final>=0?'var(--green2)':'var(--red2)'};font-weight:700">${r.final>0?'+':''}${r.final}</span>
+          <div style="display:flex;align-items:center;gap:6px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+            <span style="font-weight:600;flex:1">${r.name}</span>
+            <span style="font-size:11px;color:var(--text2)">เดา ${r.bid!==undefined?r.bid:'?'} / ได้ ${r.piles}</span>
+            <span style="color:${r.hitBid?'var(--gold2)':r.final>=0?'var(--green2)':'var(--red2)'};font-weight:700;min-width:40px;text-align:right">${r.hitBid?'🎯':''}${r.final>0?'+':''}${r.final}</span>
           </div>`).join('');
     }
     document.getElementById('game-body').appendChild(rc);
@@ -1188,7 +1390,7 @@ function renderActionBar(abar,submitted){
   } else if(submitted){
     let info=el('div');
     info.style.cssText='font-size:13px;color:var(--text2);text-align:center;padding:10px';
-    info.innerHTML='<span class="dot dot-g"></span>ส่งแล้ว — รอผู้เล่นคนอื่น...';
+    info.innerHTML='<span class="dot dot-g"></span>วางแล้ว — รอผู้เล่นคนอื่น...';
     abar.appendChild(info);
   }
 
@@ -1226,7 +1428,7 @@ function doAckLo(){
   }
 }
 
-function doSubmitPlay(ct,revealed){
+function doSubmitPlay(ct){
   let pieceIds=[...selectedIds];
   let selPieces=myHand.filter(p=>pieceIds.includes(p.id));
   if(selPieces.length!==G.callSize&&G.phase!=='call') return;
@@ -1235,13 +1437,39 @@ function doSubmitPlay(ct,revealed){
   callTypeChosen=null;
 
   if(isHost){
-    hostSubmitPlay(pieceIds,revealed,ct);
+    hostSubmitPlay(pieceIds,ct);
   } else {
-    hostConn.send({type:'play-submit',pieceIds,revealed,callType:ct});
-    // Optimistically remove from myHand
+    hostConn.send({type:'play-submit',pieceIds,callType:ct});
     myHand=myHand.filter(p=>!pieceIds.includes(p.id));
-    // Mark as submitted locally
-    if(G&&G.plays) G.plays[mySlot]={pieces:selPieces,revealed,submitted:true};
+    if(G&&G.plays) G.plays[mySlot]={pieces:selPieces,revealed:false,submitted:true};
+    renderGame();
+  }
+}
+
+function doRevealChoice(doReveal){
+  if(isHost){
+    hostRevealChoice(doReveal);
+  } else {
+    hostConn.send({type:'reveal-choice',doReveal});
+    // Optimistic local update
+    if(G&&G.plays&&G.plays[mySlot]) G.plays[mySlot].revealed=doReveal;
+    if(G) G.revealDone=(G.revealDone||[]).concat([mySlot]);
+    renderGame();
+  }
+}
+
+function doSubmitBid(bid){
+  if(isHost){
+    hostReceiveBid(0,bid);
+  } else {
+    hostConn.send({type:'bid-submit',bid});
+    // Optimistic
+    if(G){
+      if(!G.bids) G.bids={};
+      G.bids[mySlot]=bid;
+      G.bidDone=(G.bidDone||[]).concat([mySlot]);
+    }
+    toast('✅ เดาไว้แล้ว: '+bid+' กอง');
     renderGame();
   }
 }
