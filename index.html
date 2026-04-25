@@ -756,16 +756,14 @@ function dealHands(){
 }
 
 function hostHandleLo(slot){
-  // Guest requests lo
   if(!canLo(G_full.hands[slot]))return;
   G_full.loSlot=slot;
-  G_full.multiplier*=2;
+  let savedLead=G_full.leadSlot; // keep rotation the same
   dealHands();
+  G_full.leadSlot=savedLead;     // restore, don't change to ตี่แดง holder
   sendDeal();
-  broadcastState();
   let name=G_full.players[slot].name;
-  Object.values(conns).forEach(c=>{if(c&&c.open)c.send({type:'state-update',state:publicState()})});
-  toast('🔄 '+name+' โละ! ×'+G_full.multiplier);
+  toast('🔄 '+name+' โละ! แจกใหม่');
 }
 
 function hostAckLoCheck(slot){
@@ -1402,7 +1400,7 @@ function renderActionBar(abar,submitted){
     let myCanLo=canLo(myHand);
     let alreadyAcked=Array.isArray(G.loChecked)&&G.loChecked.includes(mySlot);
     if(myCanLo&&!alreadyAcked){
-      let lb=abtn('🔄 โละ! (แจกใหม่ ×2)','lo',()=>doLo());
+      let lb=abtn('🔄 โละ! (แจกใหม่)','lo',()=>doLo());
       row.appendChild(lb);
     }
     let okb=abtn(alreadyAcked?'✅ ยืนยันแล้ว':'✅ ยืนยัน (ไม่โละ)','nxt',()=>{if(!alreadyAcked)doAckLo();});
@@ -1549,8 +1547,9 @@ function renderActionBar(abar,submitted){
 // ══════════════════════════════════════════════════════════════
 function doLo(){
   if(isHost){
-    G_full.multiplier*=2;
+    let savedLead=G_full.leadSlot;
     dealHands();
+    G_full.leadSlot=savedLead;
     sendDeal();
   } else {
     hostConn.send({type:'lo-request'});
