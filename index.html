@@ -1169,35 +1169,49 @@ function hostRevealChoice(doReveal){
 // WON CARDS HISTORY
 // ══════════════════════════════════════════════════════════════
 let wonCardsOpen=true; // expanded by default
-let handSorted=false; // sort toggle
+let sortMode=0; // 0=original 1=rank+color 2=red|black
 
 function autoDetectCallType(){
   let selPieces=myHand.filter(p=>selectedIds.has(p.id));
   if(selPieces.length===0){callTypeChosen=null;return;}
-  // Find all valid call types for this selection
-  let valid=Object.keys(CSIZES).filter(ct=>
-    selPieces.length===CSIZES[ct]&&isValid(selPieces,ct)
-  );
+
+  // Find all truly valid call types for this exact selection
+  let valid=Object.keys(CSIZES).filter(ct=>{
+    if(selPieces.length!==CSIZES[ct]) return false;
+    // tui needs actual pair (same rank+color), not just 2 cards
+    if(ct==='tui') return isValidPair(selPieces);
+    return isValid(selPieces,ct);
+  });
+
   if(valid.length===1){
-    callTypeChosen=valid[0]; // exact match — auto select
-  } else if(valid.length===0){
-    // No match — suggest by count
-    let byCount=Object.keys(CSIZES).filter(ct=>CSIZES[ct]===selPieces.length);
-    if(byCount.length===1) callTypeChosen=byCount[0];
-    // if multiple options by count, don't auto-pick
+    callTypeChosen=valid[0];
+  } else if(valid.length>1){
+    // Multiple valid (e.g. sajuk=3 vs sahoo=3): keep existing or pick first
+    if(!callTypeChosen||!valid.includes(callTypeChosen)) callTypeChosen=valid[0];
+  } else {
+    // Nothing valid — reset call type (don't keep stale choice)
+    callTypeChosen=null;
   }
-  // if multiple valid types, keep current or leave for user
 }
 
 function getSortedHand(){
-  if(!handSorted) return [...myHand];
-  return [...myHand].sort((a,b)=>{
-    let rv=RV[b.rank]-RV[a.rank];
-    if(rv!==0) return rv;
-    // same rank: red first
-    if(a.color===b.color) return 0;
-    return a.color==='red'?-1:1;
-  });
+  if(sortMode===0) return [...myHand];
+  let arr=[...myHand];
+  if(sortMode===1){
+    // Sort by rank desc, within same rank red before black
+    arr.sort((a,b)=>{
+      let rv=RV[b.rank]-RV[a.rank];
+      if(rv!==0) return rv;
+      if(a.color===b.color) return 0;
+      return a.color==='red'?-1:1;
+    });
+  } else if(sortMode===2){
+    // All red cards first (rank desc), then all black cards (rank desc)
+    let reds=arr.filter(p=>p.color==='red').sort((a,b)=>RV[b.rank]-RV[a.rank]);
+    let blks=arr.filter(p=>p.color==='blk').sort((a,b)=>RV[b.rank]-RV[a.rank]);
+    arr=[...reds,...blks];
+  }
+  return arr;
 }
 
 function renderWonCards(body){
@@ -1517,9 +1531,12 @@ function renderGame(){
   let si=el('div','sel-info');si.textContent=selectedIds.size>0?selectedIds.size+' เลือก':'';
   hRight.appendChild(si);
   let sortBtn=el('button');
-  sortBtn.style.cssText='background:'+(handSorted?'var(--gold)':'var(--card2)')+';color:'+(handSorted?'#000':'var(--text2)')+';border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit';
-  sortBtn.textContent='⇅ เรียง';
-  sortBtn.onclick=()=>{handSorted=!handSorted;renderGame();};
+  let sortLabels=['⇅ เรียง','↕ แต้ม','🔴⚫ สี'];
+  let sortColors=['var(--card2)','var(--gold)','var(--red2)'];
+  let sortTextColors=['var(--text2)','#1a1206','#fff'];
+  sortBtn.style.cssText='background:'+sortColors[sortMode]+';color:'+sortTextColors[sortMode]+';border:1.5px solid var(--border2);border-radius:8px;padding:5px 11px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;transition:background .15s';
+  sortBtn.textContent=sortLabels[sortMode];
+  sortBtn.onclick=()=>{sortMode=(sortMode+1)%3;renderGame();};
   hRight.appendChild(sortBtn);
   hh.appendChild(hRight);
   hw.appendChild(hh);
@@ -1635,7 +1652,8 @@ function renderActionBar(abar,submitted){
     let selPieces2=myHand.filter(p=>selectedIds.has(p.id));
     Object.entries(CNAMES).forEach(([k,v])=>{
       let isSelected=callTypeChosen===k;
-      let isValidForSel=selPieces2.length>0&&selPieces2.length===CSIZES[k]&&isValid(selPieces2,k);
+      let isValidForSel=selPieces2.length>0&&selPieces2.length===CSIZES[k]&&
+      (k==='tui'?isValidPair(selPieces2):isValid(selPieces2,k));
       let isWrongCount=selPieces2.length>0&&selPieces2.length!==CSIZES[k];
       let cls='call-chip'+(isSelected?' on':'');
       let b=el('button',cls);
