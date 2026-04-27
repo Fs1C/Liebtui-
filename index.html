@@ -406,6 +406,39 @@ body{
     <div style="text-align:center;font-size:12px;color:var(--text2);margin-top:4px">
       ห้องรองรับผู้เล่นสูงสุด 4 คน · คนแรกเป็น Host
     </div>
+
+    <div class="card" style="margin-top:4px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div class="card-title" style="margin-bottom:0">🏆 สถิติการชนะ</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="home-rank-status" style="font-size:10px;color:var(--text2)">📱 Local</span>
+          <button onclick="showFbConfig()" style="background:none;border:none;color:var(--teal);font-size:11px;cursor:pointer;font-family:inherit;font-weight:700">🌐 Online</button>
+          <button onclick="clearRank()" style="background:none;border:none;color:var(--text2);font-size:11px;cursor:pointer;font-family:inherit;text-decoration:underline">🗑</button>
+        </div>
+      </div>
+      <div id="home-rank-body"></div>
+    </div>
+
+    <!-- Firebase config panel (hidden by default) -->
+    <div id="fb-config-panel" style="display:none">
+      <div class="card" style="border-color:var(--teal);background:rgba(0,184,169,.08)">
+        <div class="card-title" style="color:var(--teal)">🌐 เชื่อม Firebase (ฟรี)</div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.7">
+          1. ไปที่ <b style="color:var(--text)">console.firebase.google.com</b><br>
+          2. สร้างโปรเจค → Realtime Database → สร้าง DB<br>
+          3. Rules: ตั้ง <code style="background:var(--bg3);padding:1px 5px;border-radius:4px;font-size:11px">".read":true,".write":true</code><br>
+          4. คัดลอก URL เช่น <code style="color:var(--teal);font-size:11px">https://xxx.firebaseio.com</code>
+        </div>
+        <input class="inp" id="fb-url-input" type="url" placeholder="https://your-project.firebaseio.com"
+          style="font-size:13px;margin-bottom:8px">
+        <div class="btn-row">
+          <button class="btn btn-sm" onclick="saveFbConfig()"
+            style="background:var(--teal);color:#fff;border:none">💾 บันทึก</button>
+          <button class="btn btn-sec btn-sm" onclick="document.getElementById('fb-config-panel').style.display='none'">ยกเลิก</button>
+        </div>
+        <div id="fb-test-result" style="font-size:12px;margin-top:8px;text-align:center"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -461,10 +494,19 @@ body{
   <div class="body">
     <div class="card" id="results-card"></div>
     <div class="card">
-      <div class="card-title">🏅 อันดับ (สะสม)</div>
-      <table class="score-table" id="rank-table"><thead><tr>
-        <th>#</th><th>ชื่อ</th><th style="text-align:right">ชนะ</th><th style="text-align:right">แต้มรวม</th>
-      </tr></thead><tbody id="rank-body"></tbody></table>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><div class="card-title" style="margin-bottom:0">🏅 อันดับ (สะสม)</div><span id="rank-status" style="font-size:11px;color:var(--text2)">📱 Local</span></div>
+      <table class="score-table" id="rank-table" style="width:100%"><thead>
+        <tr style="border-bottom:2px solid var(--border2)">
+          <th style="width:32px">#</th>
+          <th>ชื่อ</th>
+          <th style="text-align:center;width:70px">ชนะ</th>
+          <th style="text-align:center;width:64px">Win%</th>
+          <th style="text-align:right;width:60px">แต้ม</th>
+        </tr>
+      </thead><tbody id="rank-body"></tbody></table>
+      <div style="margin-top:10px;text-align:right">
+        <button onclick="clearRank()" style="background:none;border:none;color:var(--text2);font-size:11px;cursor:pointer;font-family:inherit;text-decoration:underline">🗑 ล้างสถิติ</button>
+      </div>
     </div>
     <div class="btn-row">
       <button class="btn btn-gold btn-sm" onclick="hostNewGame()" id="new-game-btn">🔄 เล่นอีก</button>
@@ -667,6 +709,7 @@ function handleGuestReceive(d){
   }
   if(d.type==='game-over'){
     G=d.state;
+    saveRankGame(d.finalScores); // guest saves locally too
     showResults(d.finalScores);
   }
 }
@@ -1094,14 +1137,14 @@ function hostEndRound(){
   G_full.round++;
   // multiplier removed
 
-  let winner=results.reduce((a,b)=>b.piles>a.piles?b:a);
-  saveRank(winner.name,1,winner.final);
+  // rank saved at game-over only
 
   let topScore=Math.max(...G_full.players.map(p=>p.score));
   if(topScore>=G_full.target){
     G_full.phase='game-over';
     let finalScores=G_full.players.map(p=>({name:p.name,score:p.score,slot:p.slot}));
     finalScores.sort((a,b)=>b.score-a.score);
+    saveRankGame(finalScores); // host saves locally
     let pub=publicState();
     Object.values(conns).forEach(c=>{if(c&&c.open)c.send({type:'game-over',state:pub,finalScores})});
     G=pub;
@@ -1325,25 +1368,216 @@ function renderWonCards(body){
 // ══════════════════════════════════════════════════════════════
 // RANK SYSTEM
 // ══════════════════════════════════════════════════════════════
-function loadRank(){try{return JSON.parse(localStorage.getItem('lt_rank2')||'{}')}catch{return{}}}
-function saveRank(name,wins,score){
-  let r=loadRank();
-  if(!r[name])r[name]={wins:0,score:0,played:0};
-  r[name].wins+=wins;r[name].score+=score;r[name].played+=1;
-  localStorage.setItem('lt_rank2',JSON.stringify(r));
+// ══════════════════════════════════════════════════════════════
+// ONLINE RANK SYSTEM — Firebase Realtime Database
+// Falls back to localStorage if no Firebase URL set
+// ══════════════════════════════════════════════════════════════
+const FB_KEY='lt_firebase_url';
+function getFbUrl(){return localStorage.getItem(FB_KEY)||'';}
+function setFbUrl(url){localStorage.setItem(FB_KEY,url.replace(/\/$/,''));}
+function hasFb(){return!!getFbUrl();}
+
+// Sanitize name for Firebase key (no . # $ [ ] /)
+function fbKey(name){return name.replace(/[.#$\[\]/]/g,'_');}
+
+async function fbRead(path){
+  try{
+    let r=await fetch(getFbUrl()+path+'.json');
+    if(!r.ok)return null;
+    return await r.json();
+  }catch{return null;}
 }
-function renderRank(){
-  let r=loadRank();
-  let entries=Object.entries(r).map(([n,d])=>({name:n,...d})).sort((a,b)=>b.wins-a.wins||b.score-a.score);
+
+async function fbWrite(path,data){
+  try{
+    let r=await fetch(getFbUrl()+path+'.json',{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(data)
+    });
+    return r.ok;
+  }catch{return false;}
+}
+
+async function fbPatch(path,data){
+  try{
+    let r=await fetch(getFbUrl()+path+'.json',{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(data)
+    });
+    return r.ok;
+  }catch{return false;}
+}
+
+// Local fallback helpers
+function loadRankLocal(){try{return JSON.parse(localStorage.getItem('lt_rank2')||'{}')}catch{return{}}}
+function saveRankLocal(r){localStorage.setItem('lt_rank2',JSON.stringify(r));}
+
+async function loadRank(){
+  if(!hasFb()) return loadRankLocal();
+  let data=await fbRead('/ranks');
+  if(data===null) return loadRankLocal(); // fallback
+  return data;
+}
+
+async function saveRankGame(finalScores){
+  // finalScores sorted desc — index 0 = winner
+  if(hasFb()){
+    // Read current, merge, write back
+    let current=await fbRead('/ranks')||{};
+    finalScores.forEach((p,i)=>{
+      let k=fbKey(p.name);
+      let prev=current[k]||{wins:0,score:0,played:0,name:p.name};
+      prev.name=p.name;
+      prev.wins=(prev.wins||0)+(i===0?1:0);
+      prev.score=(prev.score||0)+p.score;
+      prev.played=(prev.played||0)+1;
+      prev.lastSeen=Date.now();
+      current[k]=prev;
+    });
+    let ok=await fbWrite('/ranks',current);
+    if(!ok){
+      // Firebase failed — save locally
+      saveRankLocal(current);
+      toast('⚠ บันทึก online ไม่ได้ บันทึกในเครื่องแทน');
+    } else {
+      toast('✅ บันทึกสถิติ online แล้ว!');
+    }
+  } else {
+    // No Firebase — local only
+    let r=loadRankLocal();
+    finalScores.forEach((p,i)=>{
+      let k=fbKey(p.name);
+      if(!r[k])r[k]={wins:0,score:0,played:0,name:p.name};
+      r[k].wins+=(i===0?1:0);
+      r[k].score+=p.score;
+      r[k].played+=1;
+    });
+    saveRankLocal(r);
+  }
+  renderRank();
+  renderHomeRank();
+}
+
+function saveRank(name,wins,score){} // no-op, only saveRankGame used now
+function drawRankTable(r,tbodyId){
+  let entries=Object.values(r)
+    .filter(e=>e&&e.name)
+    .sort((a,b)=>b.wins-a.wins||b.score-a.score);
   let medals=['🥇','🥈','🥉'];
-  document.getElementById('rank-body').innerHTML=entries.length===0
-    ?'<tr><td colspan="4" style="text-align:center;color:var(--text2);padding:20px">ยังไม่มีข้อมูล</td></tr>'
-    :entries.map((e,i)=>`<tr>
-      <td class="medal">${medals[i]||i+1}</td>
-      <td style="font-weight:600">${e.name}</td>
-      <td style="text-align:right;color:var(--green2);font-weight:700">${e.wins}</td>
-      <td style="text-align:right;color:var(--accent2)">${e.score>0?'+':''}${e.score}</td>
-    </tr>`).join('');
+  let tbody=document.getElementById(tbodyId);
+  if(!tbody)return;
+  if(entries.length===0){
+    tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--text2);padding:24px;font-size:13px">ยังไม่มีข้อมูล<br>เล่นเกมให้จบเพื่อบันทึก</td></tr>';
+    return;
+  }
+  tbody.innerHTML=entries.map((e,i)=>{
+    let winRate=e.played>0?Math.round(e.wins/e.played*100):0;
+    return`<tr style="border-bottom:1px solid rgba(255,255,255,.05)">
+      <td class="medal" style="padding:10px 6px;font-size:20px">${medals[i]||i+1}</td>
+      <td style="padding:10px 6px;font-weight:700;font-size:14px">${e.name}</td>
+      <td style="padding:10px 6px;text-align:center">
+        <div style="font-size:18px;font-weight:900;color:var(--gold2)">${e.wins}</div>
+        <div style="font-size:10px;color:var(--text2)">${e.played||0} เกม</div>
+      </td>
+      <td style="padding:10px 6px;text-align:center">
+        <div style="font-size:14px;font-weight:800;color:${winRate>=50?'var(--green2)':'var(--text2)'}">${winRate}%</div>
+        <div style="font-size:10px;color:var(--text2)">win rate</div>
+      </td>
+      <td style="padding:10px 6px;text-align:right;font-size:13px;font-weight:700;color:${(e.score||0)>=0?'var(--accent2)':'var(--red2)'}">${(e.score||0)>0?'+':''}${e.score||0}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function renderRank(){
+  let tbody=document.getElementById('rank-body');
+  if(tbody) tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--text2);padding:16px">⏳ กำลังโหลด...</td></tr>';
+  let r=await loadRank();
+  drawRankTable(r,'rank-body');
+  // Show online/offline status
+  let statusEl=document.getElementById('rank-status');
+  if(statusEl) statusEl.textContent=hasFb()?'🌐 Online':'📱 Local';
+}
+
+async function renderHomeRank(){
+  let el=document.getElementById('home-rank-body');
+  if(!el)return;
+  let statusLbl=document.getElementById('home-rank-status');
+  if(statusLbl) statusLbl.textContent=hasFb()?'🌐 Online':'📱 Local';
+  let r=await loadRank();
+  let entries=Object.values(r).filter(e=>e&&e.name)
+    .sort((a,b)=>b.wins-a.wins||b.score-a.score);
+  if(entries.length===0){
+    el.innerHTML='<div style="font-size:12px;color:var(--text2);text-align:center;padding:12px">ยังไม่มีข้อมูล</div>';
+    return;
+  }
+  let medals=['🥇','🥈','🥉','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣'];
+  let colors=['var(--gold2)','#c0c0c0','#cd7f32'];
+  el.innerHTML=entries.map((e,i)=>{
+    let winRate=(e.played||0)>0?Math.round((e.wins||0)/(e.played||1)*100):0;
+    let barW=Math.max(4,winRate);
+    return`<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+      <span style="font-size:18px;width:24px;flex-shrink:0;text-align:center">${medals[i]||i+1}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.name}</div>
+        <div style="background:var(--bg3);border-radius:4px;height:4px;margin-top:5px;overflow:hidden">
+          <div style="background:${colors[i]||'var(--green2)'};height:100%;width:${barW}%;border-radius:4px"></div>
+        </div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:18px;font-weight:900;color:${colors[i]||'var(--text)'}">${e.wins||0}</div>
+        <div style="font-size:10px;color:var(--text2)">${winRate}% · ${e.played||0}เกม</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function showFbConfig(){
+  let panel=document.getElementById('fb-config-panel');
+  let inp=document.getElementById('fb-url-input');
+  if(inp) inp.value=getFbUrl();
+  if(panel) panel.style.display=panel.style.display==='none'?'block':'none';
+}
+
+async function saveFbConfig(){
+  let url=(document.getElementById('fb-url-input').value||'').trim();
+  let result=document.getElementById('fb-test-result');
+  if(!url){result.style.color='var(--red2)';result.textContent='⚠ ใส่ URL ก่อน';return;}
+  result.textContent='⏳ กำลังทดสอบ...';result.style.color='var(--text2)';
+  // Test connection
+  try{
+    let r=await fetch(url.replace(/\/$/,'')+'/ranks.json',{method:'GET'});
+    if(r.ok||r.status===200){
+      setFbUrl(url);
+      result.style.color='var(--green2)';
+      result.textContent='✅ เชื่อมต่อสำเร็จ! บันทึกแล้ว';
+      setTimeout(()=>{
+        document.getElementById('fb-config-panel').style.display='none';
+        renderHomeRank();
+      },1500);
+    } else {
+      result.style.color='var(--red2)';
+      result.textContent='❌ URL ไม่ถูกต้อง (status '+r.status+')';
+    }
+  }catch(e){
+    result.style.color='var(--red2)';
+    result.textContent='❌ เชื่อมไม่ได้: '+e.message;
+  }
+}
+
+async function clearRank(){
+  if(confirm('ล้างสถิติทั้งหมด?')){
+    localStorage.removeItem('lt_rank2');
+    if(hasFb()){
+      await fbWrite('/ranks',{});
+      toast('🗑 ล้างสถิติ online แล้ว');
+    } else {
+      toast('🗑 ล้างแล้ว');
+    }
+    renderRank();
+    renderHomeRank();
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1856,6 +2090,7 @@ function showResults(finalScores){
         <span style="font-size:20px;font-weight:900;color:${i===0?'var(--gold2)':'var(--text)'}">${p.score>0?'+':''}${p.score}</span>
       </div>`).join('');
   renderRank();
+  renderHomeRank();
   if(!isHost) document.getElementById('new-game-btn').style.display='none';
 }
 
@@ -1926,6 +2161,7 @@ function toast(msg,dur=2400){
 window.onload=()=>{
   let saved=localStorage.getItem('lt_name');
   if(saved) document.getElementById('my-name').value=saved;
+  renderHomeRank();
   document.getElementById('my-name').addEventListener('blur',e=>{
     localStorage.setItem('lt_name',e.target.value);
   });
