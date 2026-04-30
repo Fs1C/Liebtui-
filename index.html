@@ -1,8 +1,9 @@
 <!DOCTYPE html>
+<!-- v2.1 fixed wonCardsOpen duplicate -->
 <html lang="th">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>เลี๊ยบตุ่ย 🀄 Online Multiplayer</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Sans+Thai:wght@400;600;700;800&display=swap');
@@ -236,7 +237,8 @@ body{
 .abar{
   background:linear-gradient(180deg,transparent,var(--bg2));
   border-top:1.5px solid var(--border2);
-  padding:8px 12px 12px;flex-shrink:0;
+  padding:8px 12px calc(12px + env(safe-area-inset-bottom, 20px));
+  flex-shrink:0;
   backdrop-filter:blur(4px);
 }
 .abar-row{display:flex;gap:7px}
@@ -257,7 +259,6 @@ body{
   background:linear-gradient(135deg,var(--gold),var(--golddark));
   color:#1a1206;box-shadow:0 3px 12px rgba(245,200,66,.4);
 }
-.abar-btn.lo{background:linear-gradient(135deg,var(--red2),var(--red));color:#fff}
 .abar-btn.nxt{background:linear-gradient(135deg,var(--gold),var(--golddark));color:#1a1206}
 .abar-btn:disabled{opacity:.25;cursor:not-allowed;box-shadow:none}
 
@@ -531,7 +532,7 @@ const PCOLS=['s1','s2','s3','s4'];
 // FIREBASE REALTIME DATABASE NETWORKING
 // No WebRTC — Firebase handles persistence & reconnection natively
 // ══════════════════════════════════════════════════════════════
-let myName='',mySlot=-1,isHost=false;
+let myName='',mySlot=-1,isHost=false,currentRoom='';
 let G=null,myHand=[],selectedIds=new Set();
 let G_full=null,G_lobby={players:[null,null,null,null],target:50};
 let pollTimer=null,hostHeartbeatTimer=null,actionPollTimer=null;
@@ -579,6 +580,8 @@ async function fbPush(path,data){
     return d.name;
   }catch{return null;}
 }
+function roomPath(p){return'/rooms/'+currentRoom+p;}
+
 async function fbDelete(path){
   try{
     await fetch(getFbUrl()+path+'.json',{method:'DELETE'});
@@ -587,13 +590,67 @@ async function fbDelete(path){
 
 // ── Session ──
 const SESSION_KEY='lt_session';
-function saveSession(){localStorage.setItem(SESSION_KEY,JSON.stringify({myName,mySlot,isHost,ts:Date.now()}));}
+function saveSession(){localStorage.setItem(SESSION_KEY,JSON.stringify({myName,mySlot,isHost,currentRoom,ts:Date.now()}));}
 function loadSession(){try{return JSON.parse(localStorage.getItem(SESSION_KEY)||'null');}catch{return null;}}
 function clearSession(){localStorage.removeItem(SESSION_KEY);}
 
 // ══════════════════════════════════════════════════════════════
 // ENTER LOBBY
 // ══════════════════════════════════════════════════════════════
+const ROOMS=['room1','room2','room3','room4'];
+const ROOM_NAMES=['ห้อง 1','ห้อง 2','ห้อง 3','ห้อง 4'];
+const ROOM_EMOJI=['🏠','🏡','🏢','🏰'];
+let homeRefreshTimer=null;
+
+async function refreshRoomList(){
+  let el=document.getElementById('room-list');
+  if(!el)return;
+  let html='';
+  for(let i=0;i<ROOMS.length;i++){
+    let rid=ROOMS[i];
+    let lobby=await fbGet('/rooms/'+rid+'/lobby');
+    let hostHb=await fbGet('/rooms/'+rid+'/host');
+    let count=0,names=[];
+    if(lobby&&lobby.players){
+      lobby.players.forEach(p=>{
+        if(p&&p.connected!==false){count++;names.push(p.name);}
+      });
+    }
+    let alive=hostHb&&hostHb.ts&&(Date.now()-hostHb.ts)<10000;
+    let full=count>=4;
+    let statusColor=count===0?'var(--text2)':full?'var(--red2)':'var(--green2)';
+    let statusText=count===0?'ว่าง':full?'เต็ม':count+'/4 คน';
+    let playerList=names.length>0?names.join(', '):'ยังไม่มีใคร';
+    html+=`<div onclick="${full?'':"enterRoom('"+rid+"')"}" style="
+      background:${full?'var(--bg3)':'var(--card)'};
+      border:1.5px solid ${count>0?statusColor:'var(--border2)'};
+      border-radius:14px;padding:14px;cursor:${full?'not-allowed':'pointer'};
+      opacity:${full?'0.5':'1'};transition:transform .1s;text-align:center;
+    " ${full?'':'onmousedown="this.style.transform='scale(0.96)'" onmouseup="this.style.transform='scale(1)'"'}>
+      <div style="font-size:28px;margin-bottom:4px">${ROOM_EMOJI[i]}</div>
+      <div style="font-size:14px;font-weight:800;color:var(--text)">${ROOM_NAMES[i]}</div>
+      <div style="font-size:12px;font-weight:700;color:${statusColor};margin-top:4px">${statusText}</div>
+      <div style="font-size:10px;color:var(--text2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${playerList}</div>
+    </div>`;
+  }
+  el.innerHTML=html;
+}
+
+function startHomeRefresh(){
+  refreshRoomList();
+  clearInterval(homeRefreshTimer);
+  homeRefreshTimer=setInterval(refreshRoomList,3000);
+}
+function stopHomeRefresh(){clearInterval(homeRefreshTimer);}
+
+async function enterRoom(roomId){
+  myName=document.getElementById('my-name').value.trim()||'ผู้เล่น';
+  if(!myName){toast('⚠ ใส่ชื่อก่อนนะ');return;}
+  currentRoom=roomId;
+  stopHomeRefresh();
+  await doEnterLobby();
+}
+
 async function doEnterLobby(){
   myName=document.getElementById('my-name').value.trim()||'ผู้เล่น';
   if(!myName){toast('⚠ ใส่ชื่อก่อนนะ');return;}
@@ -607,12 +664,12 @@ async function doEnterLobby(){
 
   try{
   // Check if there's a live host (heartbeat within 8s)
-  let hostHb=await fbGet('/room/host');
+  let hostHb=await fbGet(roomPath('/host'));
   let now=Date.now();
   let hostAlive=hostHb&&hostHb.ts&&(now-hostHb.ts)<8000;
 
   // Check existing lobby
-  let lobby=await fbGet('/room/lobby');
+  let lobby=await fbGet(roomPath('/lobby'));
 
   if(!hostAlive){
     // Become host — write heartbeat
@@ -621,10 +678,10 @@ async function doEnterLobby(){
     // Keep existing players if lobby has them, else fresh
     let players=existing.map((p,i)=>i===0?{name:myName,connected:true,slot:0}:(p||null));
     G_lobby={players,target:50};
-    await fbSet('/room/lobby',{players,target:50,updatedAt:Date.now()});
-    await fbSet('/room/host',{ts:Date.now(),name:myName});
+    await fbSet(roomPath('/lobby'),{players,target:50,updatedAt:Date.now()});
+    await fbSet(roomPath('/host'),{ts:Date.now(),name:myName});
     saveSession();
-    document.getElementById('lob-role').textContent='Host · '+myName;
+    document.getElementById('lob-role').textContent=(ROOM_NAMES[ROOMS.indexOf(currentRoom)]||currentRoom)+' · Host · '+myName;
     document.getElementById('target-card').style.display='';
     document.getElementById('start-btn').style.display='';
     document.getElementById('new-game-btn').style.display='';
@@ -650,18 +707,18 @@ async function doEnterLobby(){
     if(reclaimSlot===-1){toast('❌ ห้องเต็ม');showScreen('s-home');return;}
     mySlot=reclaimSlot;
     players[mySlot]={name:myName,connected:true,slot:mySlot,ts:Date.now()};
-    await fbPatch('/room/lobby',{players,updatedAt:Date.now()});
+    await fbPatch(roomPath('/lobby'),{players,updatedAt:Date.now()});
     G_lobby={players,target:lobby.target||50};
     saveSession();
-    document.getElementById('lob-role').textContent='ผู้เล่น '+(mySlot+1)+' · '+myName;
+    document.getElementById('lob-role').textContent=(ROOM_NAMES[ROOMS.indexOf(currentRoom)]||currentRoom)+' · ผู้เล่น '+(mySlot+1)+' · '+myName;
     updateLobbyUI();
     toast('✅ เข้าร่วมแล้ว!');
     startLobbyPoll();
     // If game already running, fetch state
-    let st=await fbGet('/room/state');
+    let st=await fbGet(roomPath('/state'));
     if(st&&st.phase&&st.phase!=='lobby'){
       G=st;
-      let hand=await fbGet('/room/hands/'+mySlot);
+      let hand=await fbGet(roomPath('/hands/'+mySlot));
       myHand=hand||[];
       showScreen('s-game');
       startGamePoll();
@@ -681,7 +738,7 @@ async function doEnterLobby(){
 function startHostHeartbeat(){
   clearInterval(hostHeartbeatTimer);
   hostHeartbeatTimer=setInterval(async()=>{
-    if(isHost) await fbPatch('/room/host',{ts:Date.now()});
+    if(isHost) await fbPatch(roomPath('/host'),{ts:Date.now()});
   },3000);
 }
 
@@ -691,18 +748,18 @@ function startHostHeartbeat(){
 function startLobbyPoll(){
   clearInterval(pollTimer);
   pollTimer=setInterval(async()=>{
-    let lobby=await fbGet('/room/lobby');
+    let lobby=await fbGet(roomPath('/lobby'));
     if(!lobby)return;
     G_lobby.players=lobby.players||G_lobby.players;
     G_lobby.target=lobby.target||50;
     updateLobbyUI();
     // If host started game, state will have a phase
     if(!isHost){
-      let st=await fbGet('/room/state');
+      let st=await fbGet(roomPath('/state'));
       if(st&&st.phase&&st.phase!=='lobby'){
         clearInterval(pollTimer);
         G=st;
-        let hand=await fbGet('/room/hands/'+mySlot);
+        let hand=await fbGet(roomPath('/hands/'+mySlot));
         myHand=hand||[];
         showScreen('s-game');
         startGamePoll();
@@ -719,12 +776,12 @@ function startLobbyPoll(){
           changed=true;
         }
       }
-      if(changed) await fbPatch('/room/lobby',{players:G_lobby.players,updatedAt:Date.now()});
+      if(changed) await fbPatch(roomPath('/lobby'),{players:G_lobby.players,updatedAt:Date.now()});
     } else {
       // Guest: update own heartbeat in lobby
       if(mySlot>0&&G_lobby.players[mySlot]){
         G_lobby.players[mySlot].ts=Date.now();
-        await fbPatch('/room/lobby/players/'+mySlot,{ts:Date.now(),connected:true});
+        await fbPatch(roomPath('/lobby/players/'+mySlot),{ts:Date.now(),connected:true});
       }
     }
   },1500);
@@ -737,12 +794,12 @@ function startGamePoll(){
   clearInterval(actionPollTimer);
   actionPollTimer=setInterval(async()=>{
     // All: read public state
-    let st=await fbGet('/room/state');
+    let st=await fbGet(roomPath('/state'));
     if(st&&st.ver&&st.ver!==lastStateVer){
       lastStateVer=st.ver;
       G=st;
       // Read private hand if state changed
-      let hand=await fbGet('/room/hands/'+mySlot);
+      let hand=await fbGet(roomPath('/hands/'+mySlot));
       if(hand) myHand=hand;
       renderGame();
     }
@@ -752,7 +809,7 @@ function startGamePoll(){
     }
     // Update guest heartbeat
     if(!isHost&&mySlot>0){
-      await fbPatch('/room/lobby/players/'+mySlot,{ts:Date.now(),connected:true});
+      await fbPatch(roomPath('/lobby/players/'+mySlot),{ts:Date.now(),connected:true});
     }
     // Check for game-over screen
     if(G&&G.phase==='game-over'&&document.getElementById('s-game').classList.contains('on')){
@@ -775,14 +832,14 @@ async function pushAction(data){
     // Host processes own actions directly
     await hostProcessAction(data);
   } else {
-    await fbPush('/room/actions',data);
+    await fbPush(roomPath('/actions'),data);
   }
 }
 
 async function processActions(){
   isProcessingActions=true;
   try{
-    let actions=await fbGet('/room/actions');
+    let actions=await fbGet(roomPath('/actions'));
     if(!actions){isProcessingActions=false;return;}
     // Sort by timestamp
     let sorted=Object.entries(actions)
@@ -790,7 +847,7 @@ async function processActions(){
       .sort((a,b)=>a.ts-b.ts);
     for(let action of sorted){
       await hostProcessAction(action);
-      await fbDelete('/room/actions/'+action._key);
+      await fbDelete(roomPath('/actions/'+action._key));
     }
   }catch(e){}
   isProcessingActions=false;
@@ -798,9 +855,7 @@ async function processActions(){
 
 async function hostProcessAction(d){
   let slot=d.slot;
-  if(d.type==='ack-lo')   { hostAckLoCheck(slot); }
-  else if(d.type==='lo-request') { hostHandleLo(slot); }
-  else if(d.type==='bid-submit') { hostReceiveBid(slot,d.bid); }
+  if(d.type==='bid-submit') { hostReceiveBid(slot,d.bid); }
   else if(d.type==='play-submit'){ hostHandlePlay(slot,d.pieceIds,d.callType); }
   else if(d.type==='reveal-choice'){ hostReceiveReveal(slot,d.doReveal); }
 }
@@ -815,11 +870,11 @@ async function broadcastState(){
   let pub=publicState();
   pub.ver=++_stateVer;
   G=pub;
-  await fbSet('/room/state',pub);
+  await fbSet(roomPath('/state'),pub);
   // Write each hand privately
   for(let i=0;i<4;i++){
     if(G_full.hands&&G_full.hands[i]){
-      await fbSet('/room/hands/'+i,G_full.hands[i]);
+      await fbSet(roomPath('/hands/'+i),G_full.hands[i]);
     }
   }
   myHand=G_full.hands&&G_full.hands[0]?G_full.hands[0]:[];
@@ -835,12 +890,12 @@ async function sendDeal(){
   // Write all hands privately
   for(let i=0;i<4;i++){
     if(G_full.hands&&G_full.hands[i]){
-      await fbSet('/room/hands/'+i,G_full.hands[i]);
+      await fbSet(roomPath('/hands/'+i),G_full.hands[i]);
     }
   }
   myHand=G_full.hands&&G_full.hands[0]?G_full.hands[0]:[];
   selectedIds.clear();
-  await fbSet('/room/state',pub);
+  await fbSet(roomPath('/state'),pub);
   showScreen('s-game');
   clearInterval(pollTimer);
   startGamePoll();
@@ -849,24 +904,15 @@ async function sendDeal(){
 
 function broadcastLobby(){
   if(!isHost)return;
-  fbPatch('/room/lobby',{players:G_lobby.players,updatedAt:Date.now()});
+  fbPatch(roomPath('/lobby'),{players:G_lobby.players,updatedAt:Date.now()});
   updateLobbyUI();
 }
 
 // ══════════════════════════════════════════════════════════════
 // PLAYER ACTIONS (guest sends to Firebase queue)
 // ══════════════════════════════════════════════════════════════
-function doLo(){pushAction({type:'lo-request'});}
-function doAckLo(){
-  pushAction({type:'ack-lo'});
-  if(G){
-    if(!Array.isArray(G.loChecked))G.loChecked=[];
-    if(!G.loChecked.includes(mySlot))G.loChecked.push(mySlot);
-    G.loCheckedCount=(G.loCheckedCount||0)+1;
-  }
-  toast('✅ ยืนยันแล้ว รอผู้เล่นอื่น...');
-  renderGame();
-}
+// doLo removed
+// doAckLo removed
 function doSubmitBid(bid){
   pushAction({type:'bid-submit',bid});
   if(G){if(!G.bids)G.bids={};G.bids[mySlot]=bid;G.bidDone=(G.bidDone||[]).concat([mySlot]);}
@@ -902,7 +948,7 @@ function doRevealChoice(doReveal){
 function hostStartGame(){
   if(!isHost)return;
   G_lobby.target=parseInt(document.getElementById('target-sel').value||50);
-  fbPatch('/room/lobby',{target:G_lobby.target});
+  fbPatch(roomPath('/lobby'),{target:G_lobby.target});
   initGameState();
   dealHands();
   sendDeal();
@@ -956,8 +1002,8 @@ function leaveRoom(){
   clearSession();
   // Mark slot as disconnected
   if(mySlot>=0&&hasFb()){
-    fbPatch('/room/lobby/players/'+mySlot,{connected:false});
-    if(isHost) fbPatch('/room/host',{ts:0});
+    fbPatch(roomPath('/lobby/players/'+mySlot),{connected:false});
+    if(isHost) fbPatch(roomPath('/host'),{ts:0});
   }
   G=null;G_full=null;myHand=[];selectedIds.clear();callTypeChosen=null;
   mySlot=-1;isHost=false;
@@ -1063,9 +1109,7 @@ function cmpSet(a,b,ct){
   return 0;
 }
 
-function canLo(hand){
-  return!hand.some(p=>p.rank==='ตี่'||p.rank==='บิน'||(p.rank==='ช้าง'&&p.color==='red'));
-}
+// canLo removed — fair deal guarantees high cards
 
 
 
@@ -1073,13 +1117,11 @@ function initGameState(){
   G_full={
     players:G_lobby.players.map((p,i)=>({name:p.name,score:0,piles:0,slot:i})),
     round:1,target:G_lobby.target,multiplier:1,
-    phase:'check-lo', // check-lo | bid | call | waiting-play | seq-reveal | reveal | end-round | game-over
+    phase:'bid', // bid | call | waiting-play | seq-reveal | reveal | end-round | game-over
     callType:null,callSize:0,
     leadSlot:0,roundStartSlot:0,currentChecking:0,
     plays:{}, // slot->{ pieces, revealed, submitted }
     hands:{},
-    loChecked:[],
-    loSlot:-1,
     handsDone:0,
     totalHandPieces:0,
     roundResults:null,
@@ -1095,54 +1137,47 @@ function initGameState(){
 }
 
 function dealHands(){
-  let deck=shuffle(buildDeck());
-  let cut=Math.floor(Math.random()*21)+4;
-  deck=[...deck.slice(cut),...deck.slice(0,cut)];
-  G_full.hands={};
-  for(let i=0;i<4;i++) G_full.hands[i]=deck.slice(i*8,(i+1)*8);
-  // leadSlot always starts from roundStartSlot (strict 1→2→3→4 rotation)
-  G_full.leadSlot=G_full.roundStartSlot;
-  G_full.currentChecking=0;
-  G_full.loChecked=[];
-  G_full.plays={};
-  G_full.phase='check-lo';
-  G_full.wonCards={0:[],1:[],2:[],3:[]};
-}
-
-function hostHandleLo(slot){
-  if(!canLo(G_full.hands[slot]))return;
-  G_full.loSlot=slot;
-  // roundStartSlot preserved — dealHands will set leadSlot=roundStartSlot
-  dealHands();
-  sendDeal();
-  let name=G_full.players[slot].name;
-  toast('🔄 '+name+' โละ! แจกใหม่');
-}
-
-function hostAckLoCheck(slot){
-  if(!Array.isArray(G_full.loChecked)) G_full.loChecked=[];
-  if(!G_full.loChecked.includes(slot)) G_full.loChecked.push(slot);
-  G_full.loCheckedCount=G_full.loChecked.length;
-  if(G_full.loChecked.length>=4){
-    G_full.loChecked=[];
-    G_full.loCheckedCount=0;
-    callTypeChosen=null;
-    hostStartBidPhase();
-  } else {
-    broadcastState();
+  // Deal cards ensuring every player gets at least 1 high card (ช้าง or higher)
+  let attempts=0;
+  while(attempts<200){
+    let deck=shuffle(buildDeck());
+    let hands={};
+    for(let i=0;i<4;i++) hands[i]=deck.slice(i*8,(i+1)*8);
+    // Check: every player has at least 1 card with rank ช้าง or higher
+    let fair=true;
+    for(let i=0;i<4;i++){
+      let hasHigh=hands[i].some(p=>RV[p.rank]>=5); // ช้าง=5, บิน=6, ตี่=7
+      if(!hasHigh){fair=false;break;}
+    }
+    if(fair){
+      G_full.hands=hands;
+      break;
+    }
+    attempts++;
   }
-}
-
-function hostStartBidPhase(){
-  // Build bidding order starting from leadSlot clockwise
+  if(!G_full.hands||attempts>=200){
+    // Fallback: just deal normally
+    let deck=shuffle(buildDeck());
+    G_full.hands={};
+    for(let i=0;i<4;i++) G_full.hands[i]=deck.slice(i*8,(i+1)*8);
+  }
+  G_full.leadSlot=G_full.roundStartSlot;
+  G_full.plays={};
+  G_full.phase='bid';
+  G_full.wonCards={0:[],1:[],2:[],3:[]};
+  // Initialize bid phase
   G_full.bids={};
   G_full.bidDone=[];
   G_full.bidOrder=[];
   for(let i=0;i<4;i++) G_full.bidOrder.push((G_full.leadSlot+i)%4);
-  G_full.phase='bid';
   G_full.currentBidder=G_full.bidOrder[0];
-  broadcastState();
 }
+
+// hostHandleLo removed — no lo system
+
+// hostAckLoCheck removed — no lo system
+
+// hostStartBidPhase inlined into dealHands
 
 function hostReceiveBid(slot,bid){
   // Validate it's this player's turn to bid
@@ -1325,7 +1360,7 @@ function hostEndRound(){
     pub.finalScores=finalScores;
     pub.ver=++_stateVer;
     G=pub;
-    fbSet('/room/state',pub);
+    fbSet(roomPath('/state'),pub);
     showResults(finalScores);
   } else {
     // Auto start new round after 5s
@@ -1353,10 +1388,7 @@ function hostNewGame(){
   sendDeal();
 }
 
-// Host handles its own lo check
-function hostSelfCheckLo(){
-  hostAckLoCheck(0);
-}
+
 
 // Host submits own play (all hidden)
 function hostSubmitPlay(pieceIds,callType){
@@ -1792,7 +1824,6 @@ function renderGame(){
   // Phase info
   let ph=el('div','phase-box');
   let phTxt='';
-  if(G.phase==='check-lo') phTxt='🔍 ตรวจสอบมือ ('+(G.loCheckedCount||0)+'/4 ยืนยัน)';
   else if(G.phase==='bid'){
     let bidSum=G.bids?Object.values(G.bids).reduce((a,b)=>a+b,0):0;
     phTxt='เดากอง — '+(G.players[G.currentBidder]?G.players[G.currentBidder].name:'')+' กำลังเดา | รวม '+bidSum;
@@ -1971,20 +2002,8 @@ function renderActionBar(abar,submitted){
   if(!G)return;
   let row=el('div','abar-row');
 
-  // ── CHECK-LO PHASE ──
-  if(G.phase==='check-lo'){
-    let myCanLo=canLo(myHand);
-    let alreadyAcked=Array.isArray(G.loChecked)&&G.loChecked.includes(mySlot);
-    if(myCanLo&&!alreadyAcked){
-      let lb=abtn('🔄 โละ! (แจกใหม่)','lo',()=>doLo());
-      row.appendChild(lb);
-    }
-    let okb=abtn(alreadyAcked?'✅ ยืนยันแล้ว':'✅ ยืนยัน (ไม่โละ)','nxt',()=>{if(!alreadyAcked)doAckLo();});
-    if(alreadyAcked) okb.disabled=true;
-    row.appendChild(okb);
-
   // ── BID PHASE ──
-  } else if(G.phase==='bid'){
+  if(G.phase==='bid'){
     let myBidDone=G.bidDone&&G.bidDone.includes(mySlot);
     let isMyTurn=G.currentBidder===mySlot;
     let sumSoFar=G.bids?Object.values(G.bids).reduce((a,b)=>a+b,0):0;
@@ -2231,12 +2250,15 @@ window.onload=()=>{
   let saved=localStorage.getItem('lt_name');
   if(saved) document.getElementById('my-name').value=saved;
   renderHomeRank();
+  startHomeRefresh();
   // Auto-reconnect via Firebase if session exists
   let _sess=loadSession();
-  if(_sess&&hasFb()&&Date.now()-_sess.ts<30*60*1000){
+  if(_sess&&hasFb()&&_sess.currentRoom&&Date.now()-_sess.ts<30*60*1000){
     myName=_sess.myName;mySlot=_sess.mySlot;isHost=_sess.isHost||false;
+    currentRoom=_sess.currentRoom;
     let inp=document.getElementById('my-name');
     if(inp) inp.value=myName;
+    stopHomeRefresh();
     setTimeout(()=>doEnterLobby(),400);
   }
   document.getElementById('my-name').addEventListener('blur',e=>{
