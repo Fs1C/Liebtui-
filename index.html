@@ -560,6 +560,16 @@ const PCOLS=['s1','s2','s3','s4'];
 // NETWORK STATE
 // ══════════════════════════════════════════════════════════════
 let peer=null,myId=null,myName='',mySlot=-1,isHost=false;
+let reconnectTimer=null,reconnectAttempts=0,isReconnecting=false;
+const SESSION_KEY='lt_session';
+
+function saveSession(){
+  localStorage.setItem(SESSION_KEY,JSON.stringify({myName,mySlot,isHost,ts:Date.now()}));
+}
+function loadSession(){
+  try{return JSON.parse(localStorage.getItem(SESSION_KEY)||'null');}catch{return null;}
+}
+function clearSession(){localStorage.removeItem(SESSION_KEY);}
 let conns={}; // slotIdx -> DataConnection (host only)
 let hostConn=null; // for guests: connection to host
 
@@ -613,6 +623,7 @@ function doEnterLobby(){
     document.getElementById('start-btn').style.display='';
     document.getElementById('new-game-btn').style.display='';
     G_lobby={players:[{name:myName,connected:true,slot:0},null,null,null],target:50};
+    saveSession();
     toast('✅ คุณเป็น Host!');
     updateLobbyUI();
     peer.on('connection',conn=>{
@@ -640,8 +651,8 @@ function doEnterLobby(){
         toast('✅ เชื่อมต่อแล้ว! รอข้อมูล...');
       });
       hostConn.on('data',d=>handleGuestReceive(d));
-      hostConn.on('close',()=>{toast('⚠ หลุดการเชื่อมต่อ');showScreen('s-home');});
-      hostConn.on('error',e=>toast('⚠ '+e));
+      hostConn.on('close',()=>scheduleReconnect('หลุดการเชื่อมต่อ'));
+      hostConn.on('error',()=>scheduleReconnect('connection error'));
     });
     peer.on('error',e=>{toast('⚠ เชื่อมต่อไม่ได้: '+e.type);showScreen('s-home');});
   });
@@ -656,6 +667,39 @@ function getNextSlot(){
 // HOST: RECEIVE FROM GUESTS
 // ══════════════════════════════════════════════════════════════
 function handleHostReceive(slot,d){
+  if(d.type==='rejoin'){
+    // Player reconnecting — restore to their old slot if possible
+    let targetSlot=d.slot;
+    // If the slot is still in our player list, reassign connection
+    if(targetSlot>=0&&targetSlot<4&&G_lobby.players[targetSlot]){
+      // Move conn to correct slot
+      if(conns[slot]&&slot!==targetSlot){
+        conns[targetSlot]=conns[slot];
+        delete conns[slot];
+        slot=targetSlot;
+      }
+      G_lobby.players[slot].connected=true;
+      conns[slot].send({type:'welcome',slot,players:G_lobby.players});
+      broadcastLobby();
+      updateLobbyUI();
+      // If game in progress, resend current state + their hand
+      if(G_full&&G_full.phase!=='check-lo'&&G_full.phase!=='bid'){
+        updateHandCounts();
+        let pub=publicState();
+        let hand=G_full.hands&&G_full.hands[slot]?G_full.hands[slot]:[];
+        conns[slot].send({type:'deal',state:pub,hand});
+      } else if(G_full){
+        updateHandCounts();
+        conns[slot].send({type:'state-update',state:publicState()});
+      }
+      hideReconnectBannerForSlot(slot);
+      toast('✅ '+d.name+' กลับมาแล้ว!');
+    } else {
+      // Slot mismatch — treat as new join
+      d.type='join';
+    }
+    if(d.type!=='join') return;
+  }
   if(d.type==='join'){
     G_lobby.players[slot]={name:d.name,connected:true,slot};
     conns[slot].send({type:'welcome',slot,players:G_lobby.players});
@@ -687,6 +731,7 @@ function handleGuestReceive(d){
   if(d.type==='assign-slot'){
     // Host gave us a slot number — now send our name
     mySlot=d.slot;
+    saveSession();
     hostConn.send({type:'join',name:myName});
     document.getElementById('lob-role').textContent='ผู้เล่น '+(mySlot+1)+' · '+myName;
     document.getElementById('target-card').style.display='none';
@@ -704,6 +749,7 @@ function handleGuestReceive(d){
   if(d.type==='deal'){
     myHand=d.hand;
     G=d.state;
+    hideReconnectBanner();
     selectedIds.clear();
     showScreen('s-game');
     renderGame();
@@ -711,6 +757,7 @@ function handleGuestReceive(d){
   if(d.type==='state-update'){
     G=d.state;
     if(d.hand) myHand=d.hand;
+    if(isReconnecting) hideReconnectBanner();
     renderGame();
   }
   if(d.type==='game-over'){
@@ -2045,6 +2092,87 @@ function doSubmitPlay(ct){
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// RECONNECT SYSTEM
+// ══════════════════════════════════════════════════════════════
+function scheduleReconnect(reason){
+  if(isReconnecting||!loadSession()) return;
+  isReconnecting=true;
+  reconnectAttempts=0;
+  showReconnectBanner();
+  tryReconnect();
+}
+
+function tryReconnect(){
+  let session=loadSession();
+  if(!session){hideReconnectBanner();return;}
+  // Session older than 30min = don't bother
+  if(Date.now()-session.ts>30*60*1000){
+    clearSession();hideReconnectBanner();showScreen('s-home');return;
+  }
+  let delay=Math.min(1000*Math.pow(1.5,reconnectAttempts),15000);
+  updateReconnectBanner('🔄 กำลังเชื่อมต่อใหม่... (ครั้งที่ '+(reconnectAttempts+1)+')');
+  reconnectTimer=setTimeout(()=>{
+    reconnectAttempts++;
+    // Destroy old peer cleanly
+    if(peer){try{peer.destroy();}catch(e){}}
+    peer=null;hostConn=null;
+    // Re-init as guest (host slot could be re-taken by same device if refreshed)
+    peer=makePeer('liebtui-guest-'+Math.random().toString(36).substring(2,10));
+    peer.on('open',()=>{
+      hostConn=peer.connect(FIXED_HOST_ID,{reliable:true});
+      let timeout=setTimeout(()=>{
+        // Connection took too long
+        if(!hostConn||!hostConn.open) tryReconnect();
+      },8000);
+      hostConn.on('open',()=>{
+        clearTimeout(timeout);
+        // Send rejoin instead of join so host can restore our slot
+        hostConn.send({type:'rejoin',name:session.myName,slot:session.mySlot});
+        updateReconnectBanner('✅ เชื่อมต่อแล้ว! รอรับข้อมูล...');
+        hostConn.on('data',d=>handleGuestReceive(d));
+        hostConn.on('close',()=>scheduleReconnect('หลุดอีกครั้ง'));
+      });
+      hostConn.on('error',()=>tryReconnect());
+    });
+    peer.on('error',e=>{
+      if(reconnectAttempts<10) tryReconnect();
+      else{hideReconnectBanner();clearSession();showScreen('s-home');toast('❌ เชื่อมต่อไม่ได้');}
+    });
+  },delay);
+}
+
+function showReconnectBanner(){
+  let b=document.getElementById('reconnect-banner');
+  if(!b){
+    b=document.createElement('div');
+    b.id='reconnect-banner';
+    b.style.cssText='position:fixed;top:0;left:0;right:0;background:linear-gradient(135deg,var(--red),var(--red2));color:#fff;padding:10px 16px;z-index:9999;text-align:center;font-weight:800;font-size:13px;font-family:inherit;display:flex;align-items:center;justify-content:space-between;gap:12px';
+    b.innerHTML='<span id="reconnect-msg">🔄 กำลังเชื่อมต่อใหม่...</span><button onclick="cancelReconnect()" style="background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:6px;padding:4px 10px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700">ออก</button>';
+    document.body.appendChild(b);
+  }
+  b.style.display='flex';
+}
+function updateReconnectBanner(msg){
+  let m=document.getElementById('reconnect-msg');
+  if(m) m.textContent=msg;
+}
+function hideReconnectBannerForSlot(slot){} // host stub
+function hideReconnectBanner(){
+  isReconnecting=false;
+  let b=document.getElementById('reconnect-banner');
+  if(b) b.style.display='none';
+}
+function cancelReconnect(){
+  clearTimeout(reconnectTimer);
+  isReconnecting=false;
+  clearSession();
+  hideReconnectBanner();
+  if(peer){try{peer.destroy();}catch(e){}}
+  peer=null;hostConn=null;
+  showScreen('s-home');
+}
+
 function doRevealChoice(doReveal){
   if(isHost){
     hostRevealChoice(doReveal);
@@ -2127,6 +2255,9 @@ function showScreen(id){
 
 
 function leaveRoom(){
+  clearSession();
+  clearTimeout(reconnectTimer);
+  isReconnecting=false;
   if(peer)peer.destroy();
   peer=null;hostConn=null;conns={};
   G=null;G_full=null;myHand=[];selectedIds.clear();callTypeChosen=null;
@@ -2169,6 +2300,19 @@ window.onload=()=>{
   let saved=localStorage.getItem('lt_name');
   if(saved) document.getElementById('my-name').value=saved;
   renderHomeRank();
+  // Auto-reconnect if we have a fresh session (e.g. app switched, page refreshed)
+  let _sess=loadSession();
+  if(_sess&&!isHost&&Date.now()-_sess.ts<30*60*1000){
+    myName=_sess.myName;mySlot=_sess.mySlot;
+    let inp=document.getElementById('my-name');
+    if(inp) inp.value=myName;
+    // Small delay so page renders first
+    setTimeout(()=>{
+      showScreen('s-game'); // show game screen while reconnecting
+      showReconnectBanner();
+      tryReconnect();
+    },600);
+  }
   document.getElementById('my-name').addEventListener('blur',e=>{
     localStorage.setItem('lt_name',e.target.value);
   });
