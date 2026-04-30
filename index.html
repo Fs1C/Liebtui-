@@ -1828,7 +1828,7 @@ function renderGame(){
   // Phase info
   let ph=el('div','phase-box');
   let phTxt='';
-  else if(G.phase==='bid'){
+  if(G.phase==='bid'){
     let bidSum=G.bids?Object.values(G.bids).reduce((a,b)=>a+b,0):0;
     phTxt='เดากอง — '+(G.players[G.currentBidder]?G.players[G.currentBidder].name:'')+' กำลังเดา | รวม '+bidSum;
   }
