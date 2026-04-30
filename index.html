@@ -179,7 +179,7 @@ body{
 .piece{
   width:48px;height:48px;border-radius:14px;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  font-size:11px;font-weight:900;border:2px solid;cursor:pointer;
+  font-size:16px;font-weight:900;border:2px solid;cursor:pointer;
   flex-shrink:0;user-select:none;
   transition:transform .12s,box-shadow .12s;
   box-shadow:0 3px 8px rgba(0,0,0,.4);
@@ -545,6 +545,12 @@ body{
 const RANKS=['ตี่','บิน','ช้าง','เรือ','ม้า','เผ่า','จุก'];
 const RV={ตี่:7,บิน:6,ช้าง:5,เรือ:4,ม้า:3,เผ่า:2,จุก:1};
 const SHORT={ตี่:'ตี่',บิน:'บิน',ช้าง:'ช้',เรือ:'รือ',ม้า:'ม้า',เผ่า:'ผ่า',จุก:'จุก'};
+// Chinese chars per rank+color
+const ZH={
+  red: {ตี่:'帥',บิน:'士',ช้าง:'相',เรือ:'車',ม้า:'馬',เผ่า:'炮',จุก:'卒'},
+  blk: {ตี่:'將',บิน:'士',ช้าง:'象',เรือ:'車',ม้า:'馬',เผ่า:'炮',จุก:'兵'}
+};
+function zh(pc){return ZH[pc.color]&&ZH[pc.color][pc.rank]?ZH[pc.color][pc.rank]:'?';}
 const CNAMES={lieb:'เลี๊ยบ',tui:'ตุ่ย',sahoo:'ซาฮู้',sihoo:'สี่ฮู้',hohoo:'ห้าฮู้',hokhoo:'หกฮู้',sajuk:'ซาจุก',sijuk:'สี่จุก',hojuk:'ห้าจุก'};
 const CSIZES={lieb:1,tui:2,sahoo:3,sihoo:4,hohoo:5,hokhoo:6,sajuk:3,sijuk:4,hojuk:5};
 const PILE_SCORES=[-2,-1,0,1,2,3,4,5,16];
@@ -899,7 +905,7 @@ function initGameState(){
     round:1,target:G_lobby.target,multiplier:1,
     phase:'check-lo', // check-lo | bid | call | waiting-play | seq-reveal | reveal | end-round | game-over
     callType:null,callSize:0,
-    leadSlot:0,currentChecking:0,
+    leadSlot:0,roundStartSlot:0,currentChecking:0,
     plays:{}, // slot->{ pieces, revealed, submitted }
     hands:{},
     loChecked:[],
@@ -924,7 +930,8 @@ function dealHands(){
   deck=[...deck.slice(cut),...deck.slice(0,cut)];
   G_full.hands={};
   for(let i=0;i<4;i++) G_full.hands[i]=deck.slice(i*8,(i+1)*8);
-  // leadSlot is managed externally (rotation), not by ตี่แดง
+  // leadSlot always starts from roundStartSlot (strict 1→2→3→4 rotation)
+  G_full.leadSlot=G_full.roundStartSlot;
   G_full.currentChecking=0;
   G_full.loChecked=[];
   G_full.plays={};
@@ -935,9 +942,8 @@ function dealHands(){
 function hostHandleLo(slot){
   if(!canLo(G_full.hands[slot]))return;
   G_full.loSlot=slot;
-  let savedLead=G_full.leadSlot; // keep rotation the same
+  // roundStartSlot preserved — dealHands will set leadSlot=roundStartSlot
   dealHands();
-  G_full.leadSlot=savedLead;     // restore, don't change to ตี่แดง holder
   sendDeal();
   let name=G_full.players[slot].name;
   toast('🔄 '+name+' โละ! แจกใหม่');
@@ -1154,11 +1160,11 @@ function hostEndRound(){
     broadcastState();
     setTimeout(()=>{
       if(!G_full||G_full.phase!=='end-round') return;
-      let nextLead2=((G_full.leadSlot+1)%4);
+      let nextStart=((G_full.roundStartSlot+1)%4);
+      G_full.roundStartSlot=nextStart;
       G_full.players.forEach(p=>p.piles=0);
       G_full.wonCards={0:[],1:[],2:[],3:[]};
-      dealHands();
-      G_full.leadSlot=nextLead2;
+      dealHands(); // dealHands sets leadSlot=roundStartSlot
       callTypeChosen=null;
       sendDeal();
     },5000);
@@ -1167,9 +1173,10 @@ function hostEndRound(){
 
 function hostNewGame(){
   if(!isHost)return;
-  let nextLead=G_full?((G_full.leadSlot+1)%4):0; // rotate +1 each new game
+  let nextStart=G_full?((G_full.roundStartSlot+1)%4):0;
   initGameState();
-  G_full.leadSlot=nextLead;
+  G_full.roundStartSlot=nextStart;
+  G_full.leadSlot=nextStart;
   dealHands();
   sendDeal();
 }
@@ -1347,7 +1354,7 @@ function renderWonCards(body){
                 m.textContent='?';
               } else {
                 m.className='mini-reveal '+pc.color;
-                m.innerHTML='<span>'+SHORT[pc.rank]+'</span><span style="font-size:6px;opacity:.8">'+(pc.color==='red'?'🔴':'⚫')+'</span>';
+                m.innerHTML='<span style="font-size:13px;font-weight:900;line-height:1">'+zh(pc)+'</span>';
               }
               pPieces.appendChild(m);
             });
@@ -1994,9 +2001,8 @@ function renderActionBar(abar,submitted){
 // ══════════════════════════════════════════════════════════════
 function doLo(){
   if(isHost){
-    let savedLead=G_full.leadSlot;
+    // roundStartSlot preserved — dealHands will set leadSlot=roundStartSlot
     dealHands();
-    G_full.leadSlot=savedLead;
     sendDeal();
   } else {
     hostConn.send({type:'lo-request'});
@@ -2102,7 +2108,8 @@ function abtn(txt,cls,cb){let b=el('button','abar-btn '+cls);b.textContent=txt;b
 
 function makePieceDiv(pc,interactive=false,selected=false){
   let d=el('div','piece '+pc.color+(selected?' sel':''));
-  d.innerHTML=`<span>${SHORT[pc.rank]||pc.rank}</span><span class="p-r">${pc.color==='red'?'🔴':'⚫'}</span>`;
+  let char=zh(pc);
+  d.innerHTML=`<span style="font-size:15px;font-weight:900;line-height:1">${char}</span>`;
   return d;
 }
 function makeFd(){
