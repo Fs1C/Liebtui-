@@ -67,7 +67,7 @@ body{
 .icon-btn:active{background:rgba(255,255,255,.15)}
 
 /* SCROLL BODY */
-.body{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:10px}
+.body{flex:1;overflow-y:auto;padding:14px 12px 20px;display:flex;flex-direction:column;gap:10px}
 
 /* CARDS */
 .card{
@@ -237,7 +237,7 @@ body{
 .abar{
   background:linear-gradient(180deg,transparent,var(--bg2));
   border-top:1.5px solid var(--border2);
-  padding:8px 12px calc(12px + env(safe-area-inset-bottom, 20px));
+  padding:8px 12px calc(16px + env(safe-area-inset-bottom, 44px));
   flex-shrink:0;
   backdrop-filter:blur(4px);
 }
@@ -1877,7 +1877,9 @@ function renderGame(){
     let pg=el('div');
     pg.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:8px';
 
-    G.players.forEach((p,i)=>{
+    let displayOrder=[0,1,3,2];
+    displayOrder.forEach(i=>{
+      let p=G.players[i];
       let play=G.plays&&G.plays[i];
       let isWinner=G.phase==='reveal'&&G.winnerSlot===i;
       let isCurrentRevealer=G.phase==='seq-reveal'&&G.currentRevealer===i;
