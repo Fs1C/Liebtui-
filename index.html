@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>เลี๊ยบตุ่ย 🀄 Online Multiplayer</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600;700;800;900&family=Noto+Sans+Thai:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Sans+Thai:wght@400;600;700;800&display=swap');
 
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 :root{
@@ -35,7 +35,7 @@
 
 html,body{height:100%;overflow:hidden;background:var(--bg)}
 body{
-  font-family:'Noto Sans Thai','Kanit',system-ui,sans-serif;
+  font-family:'Noto Sans Thai',system-ui,sans-serif;
   color:var(--text);display:flex;flex-direction:column;height:100vh;
   background:radial-gradient(ellipse at top,#2a1c0a 0%,#1a1206 70%);
 }
@@ -1401,7 +1401,7 @@ function renderWonCards(body){
                 m.textContent='?';
               } else {
                 m.className='mini-reveal '+pc.color;
-                m.innerHTML='<span style="font-size:13px;font-weight:900;line-height:1">'+zh(pc)+'</span>';
+                m.innerHTML='<span style="font-size:13px;font-family:\'Ma Shan Zheng\',serif;line-height:1">'+zh(pc)+'</span>';
               }
               pPieces.appendChild(m);
             });
@@ -2237,7 +2237,7 @@ function abtn(txt,cls,cb){let b=el('button','abar-btn '+cls);b.textContent=txt;b
 function makePieceDiv(pc,interactive=false,selected=false){
   let d=el('div','piece '+pc.color+(selected?' sel':''));
   let char=zh(pc);
-  d.innerHTML=`<span style="font-size:15px;font-weight:900;line-height:1">${char}</span>`;
+  d.innerHTML=`<span style="font-size:18px;font-family:'Ma Shan Zheng',serif;line-height:1">${char}</span>`;
   return d;
 }
 function makeFd(){
