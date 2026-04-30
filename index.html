@@ -376,6 +376,10 @@ body{
 @keyframes pop{0%{transform:scale(.8);opacity:0}60%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
 .pop-in{animation:pop .25s ease-out}
 
+/* Room cards */
+.room-card{transition:transform .1s}
+.room-card:active{transform:scale(0.96)}
+
 ::-webkit-scrollbar{width:3px;height:3px}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 </style>
@@ -621,12 +625,12 @@ async function refreshRoomList(){
     let statusColor=count===0?'var(--text2)':full?'var(--red2)':'var(--green2)';
     let statusText=count===0?'ว่าง':full?'เต็ม':count+'/4 คน';
     let playerList=names.length>0?names.join(', '):'ยังไม่มีใคร';
-    html+=`<div onclick="${full?'':"enterRoom('"+rid+"')"}" style="
+    html+=`<div class="${full?'':'room-card'}" onclick="${full?'':"enterRoom('"+rid+"')"}" style="
       background:${full?'var(--bg3)':'var(--card)'};
       border:1.5px solid ${count>0?statusColor:'var(--border2)'};
       border-radius:14px;padding:14px;cursor:${full?'not-allowed':'pointer'};
       opacity:${full?'0.5':'1'};transition:transform .1s;text-align:center;
-    " ${full?'':'onmousedown="this.style.transform='scale(0.96)'" onmouseup="this.style.transform='scale(1)'"'}>
+    ">
       <div style="font-size:28px;margin-bottom:4px">${ROOM_EMOJI[i]}</div>
       <div style="font-size:14px;font-weight:800;color:var(--text)">${ROOM_NAMES[i]}</div>
       <div style="font-size:12px;font-weight:700;color:${statusColor};margin-top:4px">${statusText}</div>
