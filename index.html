@@ -237,7 +237,7 @@ body{
 .abar{
   background:linear-gradient(180deg,transparent,var(--bg2));
   border-top:1.5px solid var(--border2);
-  padding:8px 12px calc(16px + env(safe-area-inset-bottom, 44px));
+  padding:8px 12px calc(24px + env(safe-area-inset-bottom, 80px));
   flex-shrink:0;
   backdrop-filter:blur(4px);
 }
@@ -636,6 +636,23 @@ async function refreshRoomList(){
     </div>`;
   }
   el.innerHTML=html;
+
+  // Auto-cleanup: wipe rooms inactive >5 minutes
+  for(let i=0;i<ROOMS.length;i++){
+    let rid=ROOMS[i];
+    let st=await fbGet('/rooms/'+rid+'/state');
+    if(st&&st.lastActivity&&Date.now()-st.lastActivity>5*60*1000){
+      // Room idle >5 min — clear it
+      await fbSet('/rooms/'+rid,null);
+      console.log('Room '+rid+' cleared (inactive >5 min)');
+    }
+    // Also clear rooms where host heartbeat died >5 min ago
+    let hb=await fbGet('/rooms/'+rid+'/host');
+    if(hb&&hb.ts&&Date.now()-hb.ts>5*60*1000){
+      await fbSet('/rooms/'+rid,null);
+      console.log('Room '+rid+' cleared (host dead >5 min)');
+    }
+  }
 }
 
 function startHomeRefresh(){
@@ -740,7 +757,10 @@ async function doEnterLobby(){
 function startHostHeartbeat(){
   clearInterval(hostHeartbeatTimer);
   hostHeartbeatTimer=setInterval(async()=>{
-    if(isHost) await fbPatch(roomPath('/host'),{ts:Date.now()});
+    if(isHost){
+      await fbPatch(roomPath('/host'),{ts:Date.now()});
+      await fbPatch(roomPath('/state'),{lastActivity:Date.now()});
+    }
   },3000);
 }
 
@@ -767,6 +787,13 @@ function startLobbyPoll(){
         startGamePoll();
         renderGame();
       }
+    }
+    // Host: check room inactivity >5 min
+    if(isHost&&G_lobby.updatedAt&&Date.now()-G_lobby.updatedAt>5*60*1000){
+      await fbSet(roomPath(''),null);
+      toast('⏰ ห้องไม่มีกิจกรรม 5 นาที — ปิดห้องแล้ว');
+      leaveRoom();
+      return;
     }
     // Host: check for disconnected players (no heartbeat >10s)
     if(isHost){
@@ -812,6 +839,14 @@ function startGamePoll(){
     // Update guest heartbeat
     if(!isHost&&mySlot>0){
       await fbPatch(roomPath('/lobby/players/'+mySlot),{ts:Date.now(),connected:true});
+    }
+    // Host: check if room is idle >5 min, reset if so
+    if(isHost&&G&&G.lastActivity&&Date.now()-G.lastActivity>5*60*1000){
+      // No activity for 5 min — clear room
+      await fbSet(roomPath(''),null);
+      toast('⏰ ห้องไม่มีกิจกรรม 5 นาที — ปิดห้องแล้ว');
+      leaveRoom();
+      return;
     }
     // Check for game-over screen
     if(G&&G.phase==='game-over'&&document.getElementById('s-game').classList.contains('on')){
@@ -871,6 +906,7 @@ async function broadcastState(){
   updateHandCounts();
   let pub=publicState();
   pub.ver=++_stateVer;
+  pub.lastActivity=Date.now();
   G=pub;
   await fbSet(roomPath('/state'),pub);
   // Write each hand privately
@@ -888,6 +924,7 @@ async function sendDeal(){
   updateHandCounts();
   let pub=publicState();
   pub.ver=++_stateVer;
+  pub.lastActivity=Date.now();
   G=pub;
   // Write all hands privately
   for(let i=0;i<4;i++){
@@ -1387,6 +1424,7 @@ function hostEndRound(){
     let pub=publicState();
     pub.finalScores=finalScores;
     pub.ver=++_stateVer;
+    pub.lastActivity=Date.now();
     G=pub;
     fbSet(roomPath('/state'),pub);
     showResults(finalScores);
@@ -1839,7 +1877,8 @@ function renderGame(){
 
   // Score grid
   let sg=el('div','score-grid');
-  G.players.forEach((p,i)=>{
+  [0,1,3,2].forEach(i=>{
+    let p=G.players[i];
     let t=el('div','score-tile'+(i===mySlot?' me':'')+(i===G.leadSlot?' active':''));
     let bidInfo=G.bids&&G.bids[i]!==undefined?'🎯'+G.bids[i]:'🎯?';
     t.innerHTML=`<div class="st-name">${p.name}${i===mySlot?' 🌟':''}</div>
@@ -2001,11 +2040,12 @@ function renderGame(){
   }
   hw.appendChild(hp);body.appendChild(hw);
 
-  // Others hand size
-  let others=G.players.filter((_,i)=>i!==mySlot);
-  if(others.length>0){
+  // Others hand size — natural order 0,1,2,3
+  let otherOrder=[0,1,2,3].filter(i=>i!==mySlot);
+  if(otherOrder.length>0){
     let ow=el('div','others-row');
-    others.forEach(p=>{
+    otherOrder.forEach(i=>{
+      let p=G.players[i];
       let od=el('div','other-mini');
       let on=el('div','om-name');on.textContent=p.name;
       od.appendChild(on);
