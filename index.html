@@ -396,10 +396,10 @@ body{
       <div class="card-title">👤 ชื่อของคุณ</div>
       <input class="inp" id="my-name" type="text" placeholder="ใส่ชื่อของคุณ" maxlength="12"
         style="font-size:18px;text-align:center;padding:12px"
-        onkeydown="if(event.key==='Enter')doEnterLobby()">
+        onkeydown="if(event.key==='Enter')doEnterLobby().catch(e=>toast('❌ '+e.message))">
     </div>
 
-    <button class="btn btn-gold" onclick="doEnterLobby()" style="font-size:18px;padding:16px">
+    <button class="btn btn-gold" onclick="doEnterLobby().catch(e=>{console.error(e);toast('❌ '+e.message);showScreen('s-home')})" style="font-size:18px;padding:16px">
       🀄 เข้าเกม
     </button>
 
@@ -546,10 +546,9 @@ function fbKey(s){return s.replace(/[.#$\[\]\/]/g,'_');}
 async function fbGet(path){
   try{
     let r=await fetch(getFbUrl()+path+'.json',{cache:'no-store'});
-    if(!r.ok)return null;
-    let d=await r.json();
-    return d;
-  }catch{return null;}
+    if(!r.ok){console.warn('fbGet failed:',path,r.status);return null;}
+    return await r.json();
+  }catch(e){console.warn('fbGet error:',path,e.message);return null;}
 }
 async function fbSet(path,data){
   try{
@@ -603,9 +602,10 @@ async function doEnterLobby(){
   document.getElementById('lob-role').textContent='กำลังเชื่อมต่อ...';
   document.getElementById('target-card').style.display='none';
   document.getElementById('start-btn').style.display='none';
-  document.getElementById('new-game-btn').style.display='none';
+  let ngb=document.getElementById('new-game-btn');if(ngb)ngb.style.display='none';
   toast('🔌 กำลังเชื่อมต่อ...');
 
+  try{
   // Check if there's a live host (heartbeat within 8s)
   let hostHb=await fbGet('/room/host');
   let now=Date.now();
@@ -667,6 +667,11 @@ async function doEnterLobby(){
       startGamePoll();
       renderGame();
     }
+  }
+  }catch(err){
+    console.error('doEnterLobby error:',err);
+    toast('❌ เชื่อมต่อไม่ได้: '+err.message);
+    showScreen('s-home');
   }
 }
 
