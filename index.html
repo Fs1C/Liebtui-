@@ -628,14 +628,12 @@ function doEnterLobby(){
     updateLobbyUI();
     peer.on('connection',conn=>{
       conn.on('open',()=>{
-        let slot=getNextSlot();
-        if(slot===-1){conn.send({type:'full'});conn.close();return;}
-        conns[slot]=conn;
-        // Don't assign name yet — wait for 'join' message with real name
-        G_lobby.players[slot]={name:'กำลังโหลด...',connected:true,slot};
-        conn.send({type:'assign-slot',slot}); // tell guest their slot number
-        conn.on('data',d=>handleHostReceive(slot,d));
-        conn.on('close',()=>handlePeerClose(slot));
+        // Don't assign slot yet — wait for first message to know if rejoin or new join
+        // This lets disconnected players reconnect even when room appears full
+        let tempSlot='pending_'+Date.now();
+        conns[tempSlot]=conn;
+        conn.on('data',d=>handleHostReceiveFirst(tempSlot,conn,d));
+        conn.on('close',()=>{delete conns[tempSlot];});
       });
     });
     peer.on('error',e=>toast('⚠ '+e.type));
@@ -648,6 +646,8 @@ function doEnterLobby(){
     peer.on('open',()=>{
       hostConn=peer.connect(FIXED_HOST_ID,{reliable:true});
       hostConn.on('open',()=>{
+        // Send join immediately — host now handles slot assignment on first message
+        hostConn.send({type:'join',name:myName});
         toast('✅ เชื่อมต่อแล้ว! รอข้อมูล...');
       });
       hostConn.on('data',d=>handleGuestReceive(d));
@@ -659,8 +659,73 @@ function doEnterLobby(){
 }
 
 function getNextSlot(){
-  for(let i=1;i<=3;i++) if(!G_lobby.players[i]) return i;
+  // Return first slot that is null (never joined) OR disconnected (left game)
+  for(let i=1;i<=3;i++){
+    if(!G_lobby.players[i]) return i;
+    if(G_lobby.players[i]&&G_lobby.players[i].connected===false) return i;
+  }
   return -1;
+}
+
+function getDisconnectedSlot(name,slot){
+  // Find the exact slot for a reconnecting player by name+slot
+  if(slot>=1&&slot<=3&&G_lobby.players[slot]&&G_lobby.players[slot].connected===false){
+    return slot; // exact slot match
+  }
+  // Fallback: find by name
+  for(let i=1;i<=3;i++){
+    if(G_lobby.players[i]&&G_lobby.players[i].connected===false&&G_lobby.players[i].name===name){
+      return i;
+    }
+  }
+  return -1;
+}
+
+function handleHostReceiveFirst(tempSlot,conn,d){
+  // First message from a new connection — decide if rejoin or new join
+  delete conns[tempSlot]; // remove temp entry
+
+  if(d.type==='rejoin'){
+    // Try to find their old slot
+    let realSlot=getDisconnectedSlot(d.name,d.slot);
+    if(realSlot===-1){
+      // Their slot was taken by someone else or doesn't exist — try as new player
+      d.type='join'; // fall through to join logic below
+    } else {
+      // Restore their slot
+      conns[realSlot]=conn;
+      G_lobby.players[realSlot]={name:d.name,connected:true,slot:realSlot};
+      conn.send({type:'welcome',slot:realSlot,players:G_lobby.players});
+      broadcastLobby();
+      updateLobbyUI();
+      // If game running, resend state + hand
+      if(G_full&&G_full.hands){
+        updateHandCounts();
+        let hand=G_full.hands[realSlot]||[];
+        conn.send({type:'deal',state:publicState(),hand});
+      }
+      conn.on('data',d2=>handleHostReceive(realSlot,d2));
+      conn.on('close',()=>handlePeerClose(realSlot));
+      toast('✅ '+d.name+' กลับมาแล้ว!');
+      return;
+    }
+  }
+
+  if(d.type==='join'){
+    let slot=getNextSlot();
+    if(slot===-1){
+      conn.send({type:'full'});
+      conn.close();
+      return;
+    }
+    conns[slot]=conn;
+    G_lobby.players[slot]={name:d.name,connected:true,slot};
+    conn.send({type:'welcome',slot,players:G_lobby.players});
+    broadcastLobby();
+    updateLobbyUI();
+    conn.on('data',d2=>handleHostReceive(slot,d2));
+    conn.on('close',()=>handlePeerClose(slot));
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -700,13 +765,7 @@ function handleHostReceive(slot,d){
     }
     if(d.type!=='join') return;
   }
-  if(d.type==='join'){
-    G_lobby.players[slot]={name:d.name,connected:true,slot};
-    conns[slot].send({type:'welcome',slot,players:G_lobby.players});
-    broadcastLobby();
-    updateLobbyUI();
-  }
-  else if(d.type==='ack-lo'){
+  if(d.type==='ack-lo'){
     hostAckLoCheck(slot);
   }
   else if(d.type==='bid-submit'){
@@ -728,19 +787,17 @@ function handleHostReceive(slot,d){
 // ══════════════════════════════════════════════════════════════
 function handleGuestReceive(d){
   if(d.type==='full'){toast('❌ ห้องเต็มแล้ว');showScreen('s-home');return;}
-  if(d.type==='assign-slot'){
-    // Host gave us a slot number — now send our name
+  if(d.type==='welcome'){
+    // Host assigned our slot + sent full player list
     mySlot=d.slot;
     saveSession();
-    hostConn.send({type:'join',name:myName});
+    G_lobby.players=d.players;
     document.getElementById('lob-role').textContent='ผู้เล่น '+(mySlot+1)+' · '+myName;
     document.getElementById('target-card').style.display='none';
     document.getElementById('start-btn').style.display='none';
-  }
-  if(d.type==='welcome'){
-    // Host confirmed with full player list
-    G_lobby.players=d.players;
     updateLobbyUI();
+    hideReconnectBanner();
+    showScreen('s-lobby');
   }
   if(d.type==='lobby-update'){
     G_lobby.players=d.players;
@@ -768,7 +825,20 @@ function handleGuestReceive(d){
 }
 
 function handlePeerClose(slot){
-  if(G_lobby.players[slot]) G_lobby.players[slot].connected=false;
+  if(G_lobby.players[slot]){
+    G_lobby.players[slot].connected=false;
+    // Keep slot reserved for reconnect — don't null it out
+    // Auto-clear after 10 minutes if nobody reconnects
+    clearTimeout(G_lobby.players[slot]._clearTimer);
+    G_lobby.players[slot]._clearTimer=setTimeout(()=>{
+      if(G_lobby.players[slot]&&G_lobby.players[slot].connected===false){
+        G_lobby.players[slot]=null;
+        broadcastLobby();
+        updateLobbyUI();
+      }
+    },10*60*1000);
+  }
+  delete conns[slot];
   broadcastLobby();
   updateLobbyUI();
 }
