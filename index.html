@@ -1336,17 +1336,22 @@ function hostReceiveReveal(slot,doReveal){
 
 
 function hostResolveHand(){
-  // Find winner
+  // Find winner — iterate clockwise from leader
+  // On tie (same rank, same color), the player who placed FIRST wins (earlier in order)
   let lead=G_full.leadSlot;
   let leadPlay=G_full.plays[lead];
   let winner={slot:lead,play:leadPlay};
 
-  for(let slot of[0,1,2,3]){
-    if(slot===lead)continue;
+  // Clockwise order from leader: lead, lead+1, lead+2, lead+3
+  let playOrder=[];
+  for(let i=1;i<4;i++) playOrder.push((lead+i)%4);
+
+  for(let slot of playOrder){
     let p=G_full.plays[slot];
     if(!p||p.passed||!p.revealed)continue;
     if(!isValid(p.pieces,G_full.callType))continue;
-    if(cmpSet(p.pieces,winner.play.pieces,G_full.callType)>0) winner={slot:parseInt(slot),play:p};
+    // Strictly greater only — ties go to earlier player (already the winner)
+    if(cmpSet(p.pieces,winner.play.pieces,G_full.callType)>0) winner={slot:slot,play:p};
   }
 
   // Reveal all for display
