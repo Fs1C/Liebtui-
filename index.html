@@ -628,6 +628,7 @@ let G=null,myHand=[],selectedIds=new Set();
 let G_full=null,G_lobby={players:[null,null,null,null],target:50};
 let pollTimer=null,hostHeartbeatTimer=null,actionPollTimer=null;
 let lastStateVer=0,lastActionId=0,isProcessingActions=false;
+let rankSavedForVer=0; // prevent duplicate rank saves
 let callTypeChosen=null,sortMode=0,wonCardsOpen=true;
 
 // ── Firebase helpers ──
@@ -797,6 +798,8 @@ async function doEnterLobby(){
     toast('✅ คุณเป็น Host!');
     startHostHeartbeat();
     startLobbyPoll();
+    showChatButton(true);
+    startChatPoll();
   } else {
     // Join as guest — find or reclaim a slot
     isHost=false;
@@ -939,11 +942,11 @@ function startGamePoll(){
       leaveRoom();
       return;
     }
-    // Check for game-over screen
-    if(G&&G.phase==='game-over'&&document.getElementById('s-game').classList.contains('on')){
+    // Check for game-over screen — save rank ONCE only (host already saved, guests just show results)
+    if(G&&G.phase==='game-over'&&document.getElementById('s-game').classList.contains('on')&&G.ver!==rankSavedForVer){
       let finalScores=G.finalScores;
       if(finalScores){
-        await saveRankGame(finalScores);
+        rankSavedForVer=G.ver;
         showResults(finalScores);
       }
     }
