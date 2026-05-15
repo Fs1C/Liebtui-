@@ -512,11 +512,11 @@ body{
     </div>
 
     <div class="card" id="target-card">
-      <div class="card-title">🎯 เป้าหมายคะแนน</div>
+      <div class="card-title">🎯 จำนวนรอบ</div>
       <select id="target-sel" class="inp" style="padding:10px;font-size:14px">
-        <option value="20">20 คะแนน</option>
-        <option value="50" selected>50 คะแนน</option>
-        <option value="100">100 คะแนน</option>
+        <option value="8" selected>8 รอบ</option>
+        <option value="12">12 รอบ</option>
+        <option value="16">16 รอบ</option>
       </select>
     </div>
 
@@ -625,7 +625,7 @@ const PCOLS=['s1','s2','s3','s4'];
 // ══════════════════════════════════════════════════════════════
 let myName='',mySlot=-1,isHost=false,currentRoom='';
 let G=null,myHand=[],selectedIds=new Set();
-let G_full=null,G_lobby={players:[null,null,null,null],target:50};
+let G_full=null,G_lobby={players:[null,null,null,null],target:8};
 let pollTimer=null,hostHeartbeatTimer=null,actionPollTimer=null;
 let lastStateVer=0,lastActionId=0,isProcessingActions=false;
 let rankSavedForVer=0; // prevent duplicate rank saves
@@ -786,8 +786,8 @@ async function doEnterLobby(){
     let existing=lobby&&lobby.players?lobby.players:[null,null,null,null];
     // Keep existing players if lobby has them, else fresh
     let players=existing.map((p,i)=>i===0?{name:myName,connected:true,slot:0}:(p||null));
-    G_lobby={players,target:50};
-    await fbSet(roomPath('/lobby'),{players,target:50,updatedAt:Date.now()});
+    G_lobby={players,target:8};
+    await fbSet(roomPath('/lobby'),{players,target:8,updatedAt:Date.now()});
     await fbSet(roomPath('/host'),{ts:Date.now(),name:myName});
     saveSession();
     document.getElementById('lob-role').textContent=(ROOM_NAMES[ROOMS.indexOf(currentRoom)]||currentRoom)+' · Host · '+myName;
@@ -804,22 +804,31 @@ async function doEnterLobby(){
     // Join as guest — find or reclaim a slot
     isHost=false;
     let players=lobby&&lobby.players?lobby.players:[null,null,null,null];
-    // Try to reclaim old slot by name
     let reclaimSlot=-1;
+    // 1. Try to reclaim by exact name match (reconnecting player)
     for(let i=1;i<=3;i++){
-      if(players[i]&&players[i].name===myName){reclaimSlot=i;break;}
+      if(players[i]&&players[i].name===myName){
+        reclaimSlot=i;
+        break;
+      }
     }
-    // Or find empty slot
+    // 2. Try empty slot (null)
     if(reclaimSlot===-1){
       for(let i=1;i<=3;i++){
-        if(!players[i]||players[i].connected===false){reclaimSlot=i;break;}
+        if(!players[i]){reclaimSlot=i;break;}
+      }
+    }
+    // 3. Try disconnected slot (player left, seat open for anyone)
+    if(reclaimSlot===-1){
+      for(let i=1;i<=3;i++){
+        if(players[i]&&players[i].connected===false){reclaimSlot=i;break;}
       }
     }
     if(reclaimSlot===-1){toast('❌ ห้องเต็ม');showScreen('s-home');return;}
     mySlot=reclaimSlot;
     players[mySlot]={name:myName,connected:true,slot:mySlot,ts:Date.now()};
     await fbPatch(roomPath('/lobby'),{players,updatedAt:Date.now()});
-    G_lobby={players,target:lobby.target||50};
+    G_lobby={players,target:lobby.target||8};
     saveSession();
     document.getElementById('lob-role').textContent=(ROOM_NAMES[ROOMS.indexOf(currentRoom)]||currentRoom)+' · ผู้เล่น '+(mySlot+1)+' · '+myName;
     updateLobbyUI();
@@ -867,7 +876,7 @@ function startLobbyPoll(){
     let lobby=await fbGet(roomPath('/lobby'));
     if(!lobby)return;
     G_lobby.players=lobby.players||G_lobby.players;
-    G_lobby.target=lobby.target||50;
+    G_lobby.target=lobby.target||8;
     updateLobbyUI();
     // If host started game, state will have a phase
     if(!isHost){
@@ -894,7 +903,7 @@ function startLobbyPoll(){
       let changed=false;
       for(let i=1;i<=3;i++){
         let p=G_lobby.players[i];
-        if(p&&p.connected&&p.ts&&Date.now()-p.ts>10000){
+        if(p&&p.connected&&p.ts&&Date.now()-p.ts>15000){
           G_lobby.players[i].connected=false;
           changed=true;
         }
@@ -1080,7 +1089,7 @@ function doRevealChoice(doReveal){
 // ══════════════════════════════════════════════════════════════
 function hostStartGame(){
   if(!isHost)return;
-  G_lobby.target=parseInt(document.getElementById('target-sel').value||50);
+  G_lobby.target=parseInt(document.getElementById('target-sel').value||8);
   fbPatch(roomPath('/lobby'),{target:G_lobby.target});
   initGameState();
   dealHands();
@@ -1613,8 +1622,8 @@ function hostEndRound(){
 
   // rank saved at game-over only
 
-  let topScore=Math.max(...G_full.players.map(p=>p.score));
-  if(topScore>=G_full.target){
+  // Win condition: played enough rounds → highest score wins
+  if(G_full.round>G_full.target){
     G_full.phase='game-over';
     let finalScores=G_full.players.map(p=>({name:p.name,score:p.score,slot:p.slot}));
     finalScores.sort((a,b)=>b.score-a.score);
@@ -2068,7 +2077,7 @@ function updateLobbyUI(){
 
 function renderGame(){
   if(!G)return;
-  document.getElementById('g-round-lbl').textContent=`รอบที่ ${G.round} · เป้า ${G.target} แต้ม`;
+  document.getElementById('g-round-lbl').textContent=`รอบที่ ${G.round}/${G.target}`;
   let body=document.getElementById('game-body');
   let abar=document.getElementById('game-abar');
   body.innerHTML='';abar.innerHTML='';
