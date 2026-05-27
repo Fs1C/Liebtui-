@@ -675,10 +675,15 @@ async function fbPush(path,data){
 function roomPath(p){return'/rooms/'+currentRoom+p;}
 function ensurePlayersArray(players){
   if(!players)return[null,null,null,null];
-  if(Array.isArray(players))return players;
+  if(Array.isArray(players)){
+    return players.map(p=>(p&&p.name)?p:null);
+  }
   // Firebase stores arrays as objects {0:{...},1:null,...}
   let arr=[];
-  for(let i=0;i<4;i++) arr.push(players[i]||null);
+  for(let i=0;i<4;i++){
+    let p=players[i]||null;
+    arr.push((p&&p.name)?p:null);
+  }
   return arr;
 }
 
@@ -714,7 +719,7 @@ async function refreshRoomList(){
     if(lobby&&lobby.players){
       let pArr=Array.isArray(lobby.players)?lobby.players:Object.values(lobby.players);
       pArr.forEach(p=>{
-        if(p&&p.connected!==false){count++;names.push(p.name);}
+        if(p&&p.name&&p.connected!==false){count++;names.push(p.name);}
       });
     }
     let alive=hostHb&&hostHb.ts&&(Date.now()-hostHb.ts)<10000;
@@ -1118,6 +1123,8 @@ function updateLobbyUI(){
   let count=0,html='';
   for(let i=0;i<4;i++){
     let p=G_lobby.players?G_lobby.players[i]:null;
+    // Treat entries without a name as empty slots
+    if(p&&!p.name) p=null;
     let cls=['s1','s2','s3','s4'][i];
     if(p){
       count++;
