@@ -673,6 +673,14 @@ async function fbPush(path,data){
   }catch{return null;}
 }
 function roomPath(p){return'/rooms/'+currentRoom+p;}
+function ensurePlayersArray(players){
+  if(!players)return[null,null,null,null];
+  if(Array.isArray(players))return players;
+  // Firebase stores arrays as objects {0:{...},1:null,...}
+  let arr=[];
+  for(let i=0;i<4;i++) arr.push(players[i]||null);
+  return arr;
+}
 
 async function fbDelete(path){
   try{
@@ -704,7 +712,8 @@ async function refreshRoomList(){
     let hostHb=await fbGet('/rooms/'+rid+'/host');
     let count=0,names=[];
     if(lobby&&lobby.players){
-      lobby.players.forEach(p=>{
+      let pArr=Array.isArray(lobby.players)?lobby.players:Object.values(lobby.players);
+      pArr.forEach(p=>{
         if(p&&p.connected!==false){count++;names.push(p.name);}
       });
     }
@@ -783,7 +792,7 @@ async function doEnterLobby(){
   if(!hostAlive){
     // Become host — write heartbeat
     isHost=true;mySlot=0;
-    let existing=lobby&&lobby.players?lobby.players:[null,null,null,null];
+    let existing=ensurePlayersArray(lobby&&lobby.players);
     // Keep existing players if lobby has them, else fresh
     let players=existing.map((p,i)=>i===0?{name:myName,connected:true,slot:0}:(p||null));
     G_lobby={players,target:8};
@@ -803,7 +812,7 @@ async function doEnterLobby(){
   } else {
     // Join as guest — find or reclaim a slot
     isHost=false;
-    let players=lobby&&lobby.players?lobby.players:[null,null,null,null];
+    let players=ensurePlayersArray(lobby&&lobby.players);
     let reclaimSlot=-1;
     // 1. Try to reclaim by exact name match (reconnecting player)
     for(let i=1;i<=3;i++){
@@ -875,7 +884,7 @@ function startLobbyPoll(){
   pollTimer=setInterval(async()=>{
     let lobby=await fbGet(roomPath('/lobby'));
     if(!lobby)return;
-    G_lobby.players=lobby.players||G_lobby.players;
+    G_lobby.players=ensurePlayersArray(lobby.players||G_lobby.players);
     G_lobby.target=lobby.target||8;
     updateLobbyUI();
     // If host started game, state will have a phase
@@ -1382,7 +1391,7 @@ function publicState(){
 
 function initGameState(){
   G_full={
-    players:G_lobby.players.map((p,i)=>({name:p.name,score:0,piles:0,slot:i})),
+    players:ensurePlayersArray(G_lobby.players).map((p,i)=>({name:p?p.name:'?',score:0,piles:0,slot:i})),
     round:1,target:G_lobby.target,multiplier:1,
     phase:'bid', // bid | call | waiting-play | seq-reveal | reveal | end-round | game-over
     callType:null,callSize:0,
@@ -2057,7 +2066,7 @@ function updateLobbyUI(){
     }
   }
   slots.innerHTML=html;
-  let count=G_lobby.players.filter(Boolean).length;
+  let count=ensurePlayersArray(G_lobby.players).filter(Boolean).length;
   let countEl=document.getElementById('lob-count');
   if(countEl) countEl.textContent=count+' / 4';
   let statusEl=document.getElementById('conn-status');
